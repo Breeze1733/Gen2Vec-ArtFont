@@ -27,6 +27,7 @@
       { "from": "../../scripts/download-comfyui-engine.ps1", "to": "backend/download-comfyui-engine.ps1" },
       { "from": "../../scripts/download-models.ps1", "to": "backend/download-models.ps1" },
       { "from": "../../scripts/configure-comfyui.ps1", "to": "backend/configure-comfyui.ps1" },
+      { "from": "../../services/txt2img-api/custom_nodes", "to": "backend/custom-node-patches" },
       { "from": "../../services/vectorizer-api/dist/vectorizer-backend.exe", "to": "backend/vectorizer-backend.exe" },
       { "from": "../../services/vectorizer-api/dist/models", "to": "backend/models" },
       { "from": "../../apps/cli/dist/gen2vec_cli.exe", "to": "../gen2vec_cli.exe" },

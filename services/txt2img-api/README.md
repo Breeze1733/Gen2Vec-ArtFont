@@ -281,7 +281,7 @@ services/txt2img-api/
 │   ├── models.py          Pydantic 请求 / 响应模型
 │   └── generator.py       核心生成逻辑（文本分析、提示词合成、ComfyUI 客户端、降级 stub）
 ├── workflows/             ComfyUI 工作流 JSON（API 格式）
-├── custom_nodes/          随仓库分发的自定义节点副本
+├── custom_nodes/          自定义节点补丁源（configure-comfyui.ps1 从这里复制到 ComfyUI）
 ├── scripts/
 │   └── build-backend-exe.ps1   PyInstaller 打包脚本
 ├── tests/                 pytest 测试

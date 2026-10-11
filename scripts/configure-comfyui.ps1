@@ -7,9 +7,11 @@ into a ComfyUI Windows portable installation.
 Call this AFTER download-comfyui-engine.ps1 has finished.  The engine
 download script already calls this script as its final step (step 6).
 
-Sources for embedded patches:
-    services/txt2img-api/custom_nodes/comfyui-inspyrenet-rembg/
-When the source patches are updated, synchronise the embedded here-strings.
+Patched custom-node sources are copied verbatim from disk (no embedded copies):
+    custom-node-patches/comfyui-inspyrenet-rembg/                 next to this script (packaged)
+    services/txt2img-api/custom_nodes/comfyui-inspyrenet-rembg/   repo checkout
+Edit the source files directly; this script hashes them and re-applies
+whenever the hash differs from the last applied one.
 
 .PARAMETER DestDir
 Target backend directory (the folder that contains
@@ -40,150 +42,6 @@ $PythonExe       = Join-Path $ComfyPortable "python_embeded\python.exe"
 $InspyNodeDir    = Join-Path $CustomNodesDir "comfyui-inspyrenet-rembg"
 $PatchSentinel   = Join-Path $InspyNodeDir ".patches-applied"
 $PipSentinel     = Join-Path $ComfyPortable ".pip-complete"
-
-# -- embedded patched __init__.py --
-$PatchedInitPy = @'
-import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
-from Inspyrenet_Rembg import InspyrenetRembg, InspyrenetRembgAdvanced
-
-NODE_CLASS_MAPPINGS = {
-    "InspyrenetRembg" : InspyrenetRembg,
-    "InspyrenetRembgAdvanced" : InspyrenetRembgAdvanced,
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "InspyrenetRembg": "Inspyrenet Rembg",
-    "InspyrenetRembgAdvanced": "Inspyrenet Rembg Advanced"
-}
-__all__ = ['NODE_CLASS_MAPPINGS', "NODE_DISPLAY_NAME_MAPPINGS"]
-'@
-
-# -- embedded patched Inspyrenet_Rembg.py --
-$PatchedInspyrenetRembgPy = @'
-import os
-import numpy as np
-import torch
-from PIL import Image
-
-# ======================================================================
-# Env vars + numba monkey-patch MUST run before importing
-# transparent_background.  Otherwise numba writes inline cache into
-# site-packages __pycache__ with a path exceeding Windows MAX_PATH
-# (260 chars), causing FileNotFoundError.
-# ======================================================================
-_CUSTOM_NODE_DIR = os.path.dirname(os.path.abspath(__file__))
-_COMFYUI_DIR = os.path.dirname(os.path.dirname(_CUSTOM_NODE_DIR))
-_INSPYRENET_MODEL_DIR = os.path.join(_COMFYUI_DIR, "models", "inspyrenet")
-
-# Model directory -- prevents first-run download from GitHub.
-if "TRANSPARENT_BACKGROUND_FILE_PATH" not in os.environ:
-    os.environ["TRANSPARENT_BACKGROUND_FILE_PATH"] = _INSPYRENET_MODEL_DIR
-
-# numba cache directory (only affects explicit API cache, not pymatting inline cache).
-if "NUMBA_CACHE_DIR" not in os.environ:
-    os.environ["NUMBA_CACHE_DIR"] = os.path.join(_INSPYRENET_MODEL_DIR, ".numba_cache")
-
-# == monkey-patch: disable numba inline file cache ==
-# pymatting sources use @njit(cache=True) which writes to __pycache__/
-# next to the source file.  That path easily exceeds Windows MAX_PATH.
-# NUMBA_CACHE_DIR cannot redirect inline cache, so we must force
-# cache=False on numba.njit/jit before any import.
-# Side effect: JIT results are not persisted; recompiled on next restart.
-try:
-    import numba as _numba
-    _orig_njit = _numba.njit
-    _orig_jit = _numba.jit
-
-    def _njit_nocache(*args, **kwargs):
-        kwargs.pop("cache", None)
-        return _orig_njit(*args, **kwargs, cache=False)
-
-    def _jit_nocache(*args, **kwargs):
-        kwargs.pop("cache", None)
-        return _orig_jit(*args, **kwargs, cache=False)
-
-    _numba.njit = _njit_nocache
-    _numba.jit = _jit_nocache
-except Exception:
-    pass  # numba not available -- silently skip, transparent_background degrades
-
-from transparent_background import Remover
-from tqdm import tqdm
-
-
-# Tensor to PIL
-def tensor2pil(image):
-    return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-
-# Convert PIL to Tensor
-def pil2tensor(image):
-    return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
-
-class InspyrenetRembg:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "torchscript_jit": (["default", "on"],)
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE", "MASK")
-    FUNCTION = "remove_background"
-    CATEGORY = "image"
-
-    def remove_background(self, image, torchscript_jit):
-        if (torchscript_jit == "default"):
-            remover = Remover()
-        else:
-            remover = Remover(jit=True)
-        img_list = []
-        for img in tqdm(image, "Inspyrenet Rembg"):
-            mid = remover.process(tensor2pil(img), type='rgba')
-            out =  pil2tensor(mid)
-            img_list.append(out)
-        img_stack = torch.cat(img_list, dim=0)
-        mask = img_stack[:, :, :, 3]
-        return (img_stack, mask)
-
-class InspyrenetRembgAdvanced:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "torchscript_jit": (["default", "on"],)
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE", "MASK")
-    FUNCTION = "remove_background"
-    CATEGORY = "image"
-
-    def remove_background(self, image, torchscript_jit, threshold):
-        if (torchscript_jit == "default"):
-            remover = Remover()
-        else:
-            remover = Remover(jit=True)
-        img_list = []
-        for img in tqdm(image, "Inspyrenet Rembg"):
-            mid = remover.process(tensor2pil(img), type='rgba', threshold=threshold)
-            out =  pil2tensor(mid)
-            img_list.append(out)
-        img_stack = torch.cat(img_list, dim=0)
-        mask = img_stack[:, :, :, 3]
-        return (img_stack, mask)
-'@
 
 # -- helper functions --
 function Emit {
@@ -232,6 +90,40 @@ function Test-NonEmptyFile {
     }
 }
 
+function Resolve-PatchSourceDir {
+    <#
+      Locate the patched custom-node source directory, in priority order:
+        1. <DestDir>\custom-node-patches\comfyui-inspyrenet-rembg   packaged layout
+        2. <script dir>\custom-node-patches\comfyui-inspyrenet-rembg
+        3. <script dir>\..\services\txt2img-api\custom_nodes\comfyui-inspyrenet-rembg
+      Returns $null when none of the candidates holds both patch files.
+    #>
+    param([string]$BaseDir)
+
+    $candidates = @(
+        (Join-Path $BaseDir     "custom-node-patches\comfyui-inspyrenet-rembg"),
+        (Join-Path $PSScriptRoot "custom-node-patches\comfyui-inspyrenet-rembg"),
+        (Join-Path $PSScriptRoot "..\services\txt2img-api\custom_nodes\comfyui-inspyrenet-rembg")
+    )
+
+    foreach ($candidate in $candidates) {
+        if ((Test-NonEmptyFile (Join-Path $candidate "__init__.py")) -and
+            (Test-NonEmptyFile (Join-Path $candidate "Inspyrenet_Rembg.py"))) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+    return $null
+}
+
+function Get-PatchSetHash {
+    # 内容指纹：两个补丁文件各自 SHA256 后拼接，用于判断是否需要重新应用补丁。
+    param([string]$SourceDir)
+
+    $initHash  = (Get-FileHash -LiteralPath (Join-Path $SourceDir "__init__.py")        -Algorithm SHA256).Hash
+    $rembgHash = (Get-FileHash -LiteralPath (Join-Path $SourceDir "Inspyrenet_Rembg.py") -Algorithm SHA256).Hash
+    return "$initHash-$rembgHash"
+}
+
 # -- main --
 if (-not $Electron) {
     Write-Host "============================================" -ForegroundColor Cyan
@@ -261,26 +153,40 @@ try {
     }
 
     # ================================================================
-    # Step 1: Overwrite patched files.
+    # Step 1: Copy patched files from the on-disk source directory.
     # ================================================================
-    if (Test-NonEmptyFile $PatchSentinel) {
+    $PatchSourceDir = Resolve-PatchSourceDir -BaseDir $DestDir
+    if (-not $PatchSourceDir) {
+        throw "Patched custom-node source not found.`nLooked for custom-node-patches\comfyui-inspyrenet-rembg next to this script, and at services\txt2img-api\custom_nodes\comfyui-inspyrenet-rembg."
+    }
+    $patchHash = Get-PatchSetHash -SourceDir $PatchSourceDir
+
+    # 哨兵里存的是「上次已应用补丁的内容哈希」而非空文件：内容一变就重新应用。
+    # 节点目录会被安装器跨版本保留，只有按内容判断才能让升级后的补丁更新生效。
+    $appliedHash = if (Test-Path $PatchSentinel) {
+        (Get-Content -LiteralPath $PatchSentinel -Raw -ErrorAction SilentlyContinue)
+    } else { "" }
+    if ($null -eq $appliedHash) { $appliedHash = "" }
+    $appliedHash = $appliedHash.Trim()
+
+    if ($appliedHash -eq $patchHash) {
         Finish-Skip "apply_patches" "already applied"
         $skipCount++
     } else {
         Emit "START" "apply_patches|2 files -> comfyui-inspyrenet-rembg"
         Write-Color "Apply patched files" Yellow
+        if ($appliedHash) { Write-Step "patch content changed, re-applying" }
+        Write-Step "source: $PatchSourceDir"
 
-        Write-Step "writing __init__.py"
-        $initPyPath = Join-Path $InspyNodeDir "__init__.py"
-        $PatchedInitPy | Set-Content -LiteralPath $initPyPath -Encoding UTF8
-        if (-not (Test-NonEmptyFile $initPyPath)) { throw "failed to write __init__.py" }
+        # Copy-Item 逐字节复制，避免 Set-Content -Encoding UTF8 给 .py 加 BOM
+        foreach ($fileName in @("__init__.py", "Inspyrenet_Rembg.py")) {
+            Write-Step "writing $fileName"
+            $destPath = Join-Path $InspyNodeDir $fileName
+            Copy-Item -LiteralPath (Join-Path $PatchSourceDir $fileName) -Destination $destPath -Force
+            if (-not (Test-NonEmptyFile $destPath)) { throw "failed to write $fileName" }
+        }
 
-        Write-Step "writing Inspyrenet_Rembg.py"
-        $rembgPyPath = Join-Path $InspyNodeDir "Inspyrenet_Rembg.py"
-        $PatchedInspyrenetRembgPy | Set-Content -LiteralPath $rembgPyPath -Encoding UTF8
-        if (-not (Test-NonEmptyFile $rembgPyPath)) { throw "failed to write Inspyrenet_Rembg.py" }
-
-        [void](New-Item -ItemType File -Force -Path $PatchSentinel)
+        Set-Content -LiteralPath $PatchSentinel -Value $patchHash -Encoding Ascii -NoNewline
         Finish-Ok "apply_patches" "2 files"
         $okCount++
     }
