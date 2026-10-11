@@ -116,7 +116,7 @@ function Resolve-PatchSourceDir {
 }
 
 function Get-PatchSetHash {
-    # 内容指纹：两个补丁文件各自 SHA256 后拼接，用于判断是否需要重新应用补丁。
+    # Content fingerprint: SHA256 of each patch file, concatenated; decides whether to re-apply.
     param([string]$SourceDir)
 
     $initHash  = (Get-FileHash -LiteralPath (Join-Path $SourceDir "__init__.py")        -Algorithm SHA256).Hash
@@ -161,8 +161,8 @@ try {
     }
     $patchHash = Get-PatchSetHash -SourceDir $PatchSourceDir
 
-    # 哨兵里存的是「上次已应用补丁的内容哈希」而非空文件：内容一变就重新应用。
-    # 节点目录会被安装器跨版本保留，只有按内容判断才能让升级后的补丁更新生效。
+    # The sentinel stores the content hash of the last applied patch set rather than being
+    # empty: the installer keeps this node dir across upgrades, so only a content check works.
     $appliedHash = if (Test-Path $PatchSentinel) {
         (Get-Content -LiteralPath $PatchSentinel -Raw -ErrorAction SilentlyContinue)
     } else { "" }
@@ -178,7 +178,7 @@ try {
         if ($appliedHash) { Write-Step "patch content changed, re-applying" }
         Write-Step "source: $PatchSourceDir"
 
-        # Copy-Item 逐字节复制，避免 Set-Content -Encoding UTF8 给 .py 加 BOM
+        # Copy-Item copies bytes verbatim; Set-Content -Encoding UTF8 would add a BOM to the .py
         foreach ($fileName in @("__init__.py", "Inspyrenet_Rembg.py")) {
             Write-Step "writing $fileName"
             $destPath = Join-Path $InspyNodeDir $fileName

@@ -6,10 +6,10 @@
   Mirrors `services/txt2img-api/scripts/build-backend-exe.ps1` with shared
   structure.  Supports two toolchains:
 
-    uv (default) — runs `uv sync` to create/refresh this service's own
+    uv (default) - runs `uv sync` to create/refresh this service's own
                    .venv from pyproject.toml + uv.lock, then builds with
                    `uv run python -m PyInstaller`.  Requires pyproject.toml.
-    python       — uses the system/global Python; use this if you manage
+    python       - uses the system/global Python; use this if you manage
                    your own venv manually or uv is not installed.
 
 .PARAMETER Toolchain
@@ -29,7 +29,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-# 原生命令的 stderr 不能被当成致命错误（重定向输出时会触发 NativeCommandError）
+# Native command stderr must not be treated as fatal (it raises NativeCommandError when output is redirected)
 function Invoke-Tool {
   param([string]$Command, [string[]]$Arguments)
   $previous = $ErrorActionPreference
@@ -42,7 +42,7 @@ function Invoke-Tool {
   }
 }
 
-# 自动检测：uv 优先，找不到则回退 python
+# Auto-detect: prefer uv, fall back to python
 if (-not $Toolchain) {
   if (Get-Command uv -ErrorAction SilentlyContinue) {
     $Toolchain = "uv"

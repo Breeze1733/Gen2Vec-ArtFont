@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    下载 isnet-general-use.onnx 模型文件并校验 MD5。
+    Download the isnet-general-use.onnx model file and verify its MD5.
 .DESCRIPTION
-    从 rembg 官方 GitHub Release 下载模型，同时计算实际 MD5，
-    与预期值比对，校验不通过则删除文件并退出。
+    Downloads the model from the official rembg GitHub release, computes the
+    actual MD5 and compares it with the expected value; on mismatch it deletes the file and exits.
 .NOTES
-    本脚本与 .bat 版本功能完全一致，并存于同一目录。
+    Functionally identical to the .bat version in the same directory.
 #>
 
 $ErrorActionPreference = 'Stop'

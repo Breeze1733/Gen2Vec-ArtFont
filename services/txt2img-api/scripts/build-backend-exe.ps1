@@ -32,7 +32,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-# 原生命令的 stderr 不能被当成致命错误（重定向输出时会触发 NativeCommandError）
+# Native command stderr must not be treated as fatal (it raises NativeCommandError when output is redirected)
 function Invoke-Tool {
   param([string]$Command, [string[]]$Arguments)
   $previous = $ErrorActionPreference
@@ -45,7 +45,7 @@ function Invoke-Tool {
   }
 }
 
-# 自动检测：uv 优先，找不到则回退 python
+# Auto-detect: prefer uv, fall back to python
 if (-not $Toolchain) {
   if (Get-Command uv -ErrorAction SilentlyContinue) {
     $Toolchain = "uv"
@@ -60,17 +60,24 @@ if ($Toolchain -eq "uv") {
   if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     throw "uv is not on PATH. Install it (https://docs.astral.sh/uv/) or re-run with -Toolchain python."
   }
-  $pipArgs = @("pip", "install", "--upgrade", "pyinstaller")
+  if (-not (Test-Path "pyproject.toml")) {
+    throw "pyproject.toml not found in $root. The uv toolchain needs a uv-managed project; re-run with -Toolchain python."
+  }
+  # `uv sync` creates the project's own .venv and installs the runtime plus the
+  # dev-group dependencies (pyinstaller lives there). The previous `uv pip install`
+  # required an already-existing venv and never installed the runtime deps, so it
+  # failed outright on a clean checkout. Mirrors the vectorizer build script.
+  $installArgs = @("sync")
   $pyRunArgs = @("run", "python", "-m", "PyInstaller")
 } else {
-  $pipArgs = @("-m", "pip", "install", "--upgrade", "pip", "pyinstaller")
+  $installArgs = @("-m", "pip", "install", "--upgrade", "pip", "pyinstaller")
   $pyRunArgs = @("-m", "PyInstaller")
 }
 
-Write-Host "[1/4] Installing build dependencies via $Toolchain..."
-$exitCode = Invoke-Tool $Toolchain $pipArgs
+Write-Host "[1/4] Preparing build environment via $Toolchain..."
+$exitCode = Invoke-Tool $Toolchain $installArgs
 if ($exitCode -ne 0) {
-  throw "$Toolchain $($pipArgs -join ' ') failed with exit code $exitCode"
+  throw "$Toolchain $($installArgs -join ' ') failed with exit code $exitCode"
 }
 
 Write-Host "[2/4] Cleaning previous build outputs..."

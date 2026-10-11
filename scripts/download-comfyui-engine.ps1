@@ -407,14 +407,14 @@ function Test-ComfyArchiveSizeReady {
 }
 
 function Normalize-ComfyUIExtraction {
-    # 7z 解压后目录固定为 DestDir/ComfyUI_windows_portable
+    # After 7z extraction the directory is always DestDir/ComfyUI_windows_portable
     $extractedDir = Join-Path $DestDir "ComfyUI_windows_portable"
 
-    # 挪路径：套一层 ComfyUI_windows_portable_nvidia 父目录
+    # Move it: wrap it in a ComfyUI_windows_portable_nvidia parent directory
     New-Item -ItemType Directory -Force -Path $ComfyRoot | Out-Null
     Move-Item -LiteralPath $extractedDir -Destination $ComfyPortable -Force
 
-    # 挪好之后再检查 main.py
+    # Check main.py after the move
     if (-not (Test-ComfyUIReady)) {
         throw "ComfyUI/main.py not found after moving to $ComfyPortable"
     }
@@ -501,23 +501,23 @@ try {
 
         if ($existingSize -gt 0) {
             if (Test-Path $ComfyArchiveComplete) {
-                # 有 .complete 标记 → 下载已完整
+                # .complete marker present -> download is complete
                 $sz = Format-FileSize -Bytes $existingSize
                 Finish-Skip "ComfyUI_portable" $sz
                 $skipCount++
                 $needsDownload = $false
             } else {
-                # 有残留文件但无 .complete 标记 → 比对远程大小
+                # partial file, no .complete marker -> compare against the remote size
                 $remoteBytes = Get-RemoteFileSizeFromFallback -Urls $ComfyUrls
                 $localStr = Format-FileSize -Bytes $existingSize
                 if ($remoteBytes -gt 0 -and $existingSize -eq $remoteBytes) {
-                    # 大小与远程一致 → 补标记，跳过下载
+                    # size matches remote -> write the marker and skip the download
                     [void](New-Item -ItemType File -Force -Path $ComfyArchiveComplete)
                     Finish-Skip "ComfyUI_portable" $localStr
                     $skipCount++
                     $needsDownload = $false
                 } else {
-                    # 大小不一致 → 续传
+                    # size differs -> resume
                     $remoteStr = if ($remoteBytes -gt 0) { Format-FileSize -Bytes $remoteBytes } else { "?" }
                     Emit "CHECK" "ComfyUI_portable|${localStr}|${remoteStr}"
                     Write-Color "Check ComfyUI portable - local ${localStr} / remote ${remoteStr}" Cyan
@@ -548,15 +548,15 @@ try {
     # 3. Extract ComfyUI archive and delete it after success.
     $extractedDir = Join-Path $DestDir "ComfyUI_windows_portable"
     if (Test-Path $ComfyPortable) {
-        # 目标路径在且 main.py 就绪 → 跳过
+        # target path exists and main.py is ready -> skip
         if (Test-ComfyUIReady) {
             Finish-Skip "Extract_ComfyUI" "installed"
             $skipCount++
         } else {
-            # 目录在但 main.py 不在说明上次挪坏了 → 删掉重建
+            # dir exists but main.py is gone: a previous move broke it -> delete and rebuild
             Write-Step "corrupted $ComfyPortable, re-extract"
             Remove-Item -LiteralPath $ComfyPortable -Recurse -Force
-            # 回退到 else 流程继续执行
+            # fall through to the else branch below
         }
     }
     if (-not (Test-Path $ComfyPortable)) {

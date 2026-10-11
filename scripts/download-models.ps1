@@ -1,22 +1,22 @@
-﻿# -- download-models.ps1 — AI 模型下载脚本 --
+﻿# -- download-models.ps1 - AI model download script --
 <#
 .SYNOPSIS
-# -- 下载 11 个 AI 模型文件到 ComfyUI 便携版的 models/ 目录。 --
+# -- Downloads 11 AI model files into the ComfyUI portable models/ directory. --
 
 .PARAMETER DestDir
-# -- 目标目录（默认：脚本所在目录）。 --
+# -- Target directory (default: the directory this script lives in). --
 
 .PARAMETER Electron
-# -- Electron 集成模式：输出 MODELDL: 结构化行。 --
+# -- Electron integration mode: emit structured MODELDL: lines. --
 
 .PARAMETER NoMirror
-# -- 直接使用 huggingface.co 而非 hf-mirror.com 镜像。 --
+# -- Use huggingface.co directly instead of the hf-mirror.com mirror. --
 
 .PARAMETER MaxRetries
-# -- 每个文件的最大重试次数（默认 3）。 --
+# -- Max retries per file (default 3). --
 
 .PARAMETER Parallel
-# -- 并行下载文件数（默认 3，最大建议不超过 5）。 --
+# -- Number of files downloaded in parallel (default 3; 5 is the practical max). --
 #>
 
 param(
@@ -30,11 +30,11 @@ param(
 $ErrorActionPreference = "Stop"
 $PREFIX = if ($Electron) { "MODELDL:" } else { "" }
 
-# -- 路径 --
+# -- Paths --
 $ComfyUIDir = Join-Path $DestDir "ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable"
 $ModelsDir  = Join-Path $ComfyUIDir "ComfyUI\models"
 
-# -- 检测 aria2c --
+# -- Detect aria2c --
 $UseAria2c = $null -ne (Get-Command "aria2c" -ErrorAction SilentlyContinue)
 if (-not $Electron -and -not $PSBoundParameters.ContainsKey("Parallel")) {
     $Parallel = 1
@@ -87,8 +87,8 @@ function Stop-DownloadJobs {
 }
 
 trap {
-    Emit "ERROR" "download-models.ps1|script|130|用户中断，已停止后台下载任务"
-    Write-Color "`n已停止后台下载任务。" Yellow
+    Emit "ERROR" "download-models.ps1|script|130|Interrupted by user; background download jobs stopped"
+    Write-Color "`nBackground download jobs stopped." Yellow
     Stop-DownloadJobs
     exit 130
 }
@@ -96,10 +96,10 @@ trap {
 # -- jian ce yin qing --
 if (-not (Test-Path $ComfyUIDir)) {
     Emit "ENGINE_MISSING" $ComfyUIDir
-    Write-Color "`n错误：未找到 ComfyUI 引擎！" Red
-    Write-Color "需要目录: $ComfyUIDir" Yellow
-    Write-Color "请先把 ComfyUI-Engine.exe 放在脚本同级目录并完成解压，或用 -DestDir 指向 backend 目录。" Yellow
-    if (-not $Electron) { Read-Host "按 Enter 键退出" }
+    Write-Color "`nError: ComfyUI engine not found!" Red
+    Write-Color "Expected directory: $ComfyUIDir" Yellow
+    Write-Color "Place ComfyUI-Engine.exe next to this script and extract it first, or point -DestDir at the backend directory." Yellow
+    if (-not $Electron) { Read-Host "Press Enter to exit" }
     exit 2
 }
 Emit "ENGINE_OK"
@@ -107,21 +107,21 @@ Emit "ENGINE_OK"
 if (-not $Electron) {
     $hfD = if ($NoMirror) { "huggingface.co" } else { "hf-mirror.com" }
     Write-Host "============================================" -ForegroundColor Cyan
-    Write-Host "  ComfyUI 模型下载器" -ForegroundColor White
-    Write-Host "  目标目录: $ModelsDir" -ForegroundColor White
-    Write-Host "  镜像源:   $hfD" -ForegroundColor White
-    Write-Host "  下载工具: $(if ($UseAria2c) { 'aria2c' } else { 'PowerShell Range HTTP' })" -ForegroundColor White
-    Write-Host "  并发数:   $Parallel" -ForegroundColor White
+    Write-Host "  ComfyUI model downloader" -ForegroundColor White
+    Write-Host "  Target dir: $ModelsDir" -ForegroundColor White
+    Write-Host "  Source:     $hfD" -ForegroundColor White
+    Write-Host "  Tool:       $(if ($UseAria2c) { 'aria2c' } else { 'PowerShell Range HTTP' })" -ForegroundColor White
+    Write-Host "  Parallel:   $Parallel" -ForegroundColor White
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ""
 }
 
-# -- 模型清单 --
+# -- Model manifest --
 $HFBase = if ($NoMirror) { "https://huggingface.co" } else { "https://hf-mirror.com" }
 
-# 注意：Subdir 必须是 ComfyUI 实际解析到的目录。ComfyUI 把 diffusion_models 的搜索
-# 路径定义为 [models/unet, models/diffusion_models]（unet 在前），同名文件会被 unet/
-# 遮蔽 —— 遗留目录里留下截断的副本会顶掉完整文件（2026-06 曾因此使 Flux 完全不可用）。
+# NOTE: Subdir must match what ComfyUI actually resolves. It searches
+# [models/unet, models/diffusion_models] with unet first, so a same-named
+# file there shadows the other; a truncated leftover breaks the model (2026-06).
 $Models = @(
     @{ Subdir = "diffusion_models"; Filename = "z_image_turbo_bf16.safetensors"
        Url = "$HFBase/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors"
@@ -158,7 +158,7 @@ $Models = @(
        Size = "170 MB" }
 )
 
-# -- 辅助函数 --
+# -- Helper functions --
 function Format-FileSize {
     param([long]$Bytes)
     if ($Bytes -lt 0) { return "?" }
@@ -183,7 +183,7 @@ function Get-RemoteFileSize {
     return -1
 }
 
-# -- 主流程 --
+# -- Main flow --
 Emit "READY"
 Emit "TOTAL" $Models.Count
 
@@ -209,16 +209,16 @@ function Complete-DownloadEntry {
         Write-Color "  OK $($Entry.Model.Subdir)/$($Entry.Model.Filename) ($sz)" Green
         $script:okCount++
     } else {
-        $msg = if ($result -and $result.Message) { $result.Message } else { "后台任务状态: $state" }
+        $msg = if ($result -and $result.Message) { $result.Message } else { "background job state: $state" }
         Emit "ERROR" "$($Entry.Model.Filename)|$($Entry.Model.Subdir)|0|$msg"
-        Write-Color "  失败 $($Entry.Model.Subdir)/$($Entry.Model.Filename): $msg" Red
+        Write-Color "  Failed $($Entry.Model.Subdir)/$($Entry.Model.Filename): $msg" Red
         $script:failCount++
     }
 
     $global:downloadJobs = @($global:downloadJobs | Where-Object { $_.Job.Id -ne $jobId })
 }
 
-# -- 构建待下载列表（预先做尺寸比对） --
+# -- Build the download list (size comparison done up front) --
 foreach ($model in $Models) {
     $destDir  = Join-Path $ModelsDir $model.Subdir
     $destFile = Join-Path $destDir $model.Filename
@@ -227,7 +227,7 @@ foreach ($model in $Models) {
     if ((Test-Path $destFile) -and (Test-Path $completeFile)) {
         $sz = Format-FileSize -Bytes (Get-Item $destFile).Length
         Emit "SKIP" "$($model.Filename)|$($model.Subdir)|${sz}"
-        Write-Color "跳过 $($model.Subdir)/$($model.Filename) (${sz})" DarkGray
+        Write-Color "Skipping $($model.Subdir)/$($model.Filename) (${sz})" DarkGray
         $skipCount++
         continue
     }
@@ -241,22 +241,22 @@ foreach ($model in $Models) {
             [void](New-Item -ItemType File -Force -Path $completeFile)
             $sz = Format-FileSize -Bytes $existingSize
             Emit "SKIP" "$($model.Filename)|$($model.Subdir)|${sz}"
-            Write-Color "跳过 $($model.Subdir)/$($model.Filename) (与远程一致, $sz)" DarkGray
+            Write-Color "Skipping $($model.Subdir)/$($model.Filename) (matches remote, $sz)" DarkGray
             $skipCount++
             continue
         }
         $localStr = Format-FileSize -Bytes $existingSize
         $remoteStr = Format-FileSize -Bytes $remoteBytes
         Emit "CHECK" "$($model.Filename)|$($model.Subdir)|${localStr}|${remoteStr}"
-        Write-Color "校验 $($model.Subdir)/$($model.Filename) - 本地 ${localStr} / 远程 ${remoteStr}" Cyan
+        Write-Color "Checking $($model.Subdir)/$($model.Filename) - local ${localStr} / remote ${remoteStr}" Cyan
         Emit "RESUME" "$($model.Filename)|$($model.Subdir)|${localStr}"
-        Write-Color "续传 $($model.Subdir)/$($model.Filename) (已有 ${localStr})" Yellow
+        Write-Color "Resuming $($model.Subdir)/$($model.Filename) (have ${localStr})" Yellow
     }
 
     Emit "START" "$($model.Filename)|$($model.Subdir)|$($model.Size)"
-    Write-Color "下载 $($model.Subdir)/$($model.Filename) ($($model.Size))" Yellow
+    Write-Color "Downloading $($model.Subdir)/$($model.Filename) ($($model.Size))" Yellow
 
-# -- 真正并行：使用 Start-Job 在后台下载 --
+# -- True parallelism: download in the background with Start-Job --
     $job = Start-Job -Name "dl_$([System.IO.Path]::GetRandomFileName())" -ScriptBlock {
         param($M, $MDir, $Retries)
         $ErrorActionPreference = "Stop"
@@ -354,13 +354,13 @@ foreach ($model in $Models) {
                     $p = Start-Process -FilePath "aria2c" -ArgumentList "--continue=true --auto-file-renaming=false --allow-overwrite=true --split=4 --file-allocation=none --console-log-level=error --dir=""$destDir"" --out=""$($M.Filename)"" ""$($M.Url)""" -NoNewWindow -Wait -PassThru
                     if ($p.ExitCode -eq 0) {
                         [void](New-Item -ItemType File -Force -Path $completeFile)
-                        return New-DownloadResult -Success $true -Message "aria2c 完成"
+                        return New-DownloadResult -Success $true -Message "aria2c finished"
                     }
-                    throw "aria2c 退出码 $($p.ExitCode)"
+                    throw "aria2c exit code $($p.ExitCode)"
                 } else {
                     Invoke-RangeDownload -Url $M.Url -OutputPath $destFile
                     [void](New-Item -ItemType File -Force -Path $completeFile)
-                    return New-DownloadResult -Success $true -Message "下载完成"
+                    return New-DownloadResult -Success $true -Message "download finished"
                 }
             } catch {
                 $lastError = $_.Exception.Message
@@ -370,21 +370,21 @@ foreach ($model in $Models) {
                 Start-Sleep -Seconds 3
             }
         }
-        return New-DownloadResult -Success $false -Message "达到最大重试次数" -Code 1
+        return New-DownloadResult -Success $false -Message "max retries reached" -Code 1
     } -ArgumentList $model, $ModelsDir, $MaxRetries
 
-# -- 收集作业引用 --
+# -- Collect job references --
     if (-not $global:downloadJobs) { $global:downloadJobs = @() }
     $global:downloadJobs += @{ Job = $job; Model = $model }
 
-# -- 控制并发：等待直到活跃作业数小于 $Parallel --
+# -- Throttle: wait until fewer than $Parallel jobs are active --
     while ($true) {
         $active = @($global:downloadJobs | Where-Object { $_.Job.State -eq 'Running' -or $_.Job.State -eq 'NotStarted' })
         if ($active.Count -lt $Parallel) { break }
-# -- 等待任意一个作业完成 --
+# -- Wait for any job to finish --
         $finishedJob = Wait-Job -Job ($active.Job) -Any -Timeout 1 2>$null
         if ($finishedJob) {
-# -- 处理已完成的作业 --
+# -- Handle finished jobs --
             foreach ($job in @($finishedJob)) {
                 $entry = @($global:downloadJobs | Where-Object { $_.Job.Id -eq $job.Id })[0]
                 if ($entry) {
@@ -395,24 +395,24 @@ foreach ($model in $Models) {
     }
 }
 
-# -- 等待所有剩余作业完成 --
+# -- Wait for all remaining jobs --
 foreach ($entry in @($global:downloadJobs)) {
     $null = Wait-Job $entry.Job -Timeout 7200 -ErrorAction SilentlyContinue
     Complete-DownloadEntry -Entry $entry
 }
 $global:downloadJobs = @()
 
-# -- 完成 --
+# -- Done --
 Emit "COMPLETE" "${okCount}|${skipCount}|${failCount}"
 
 if (-not $Electron) {
     Write-Host ""
     if ($failCount -gt 0) {
-        Write-Host "完成：$okCount 成功, $skipCount 跳过, $failCount 失败" -ForegroundColor Yellow
+        Write-Host "Done: $okCount downloaded, $skipCount skipped, $failCount failed" -ForegroundColor Yellow
     } else {
-        Write-Host "完成！$okCount 下载, $skipCount 跳过。" -ForegroundColor Green
+        Write-Host "Done! $okCount downloaded, $skipCount skipped." -ForegroundColor Green
     }
 }
-if (-not $Electron) { Read-Host "按 Enter 键退出" }
+if (-not $Electron) { Read-Host "Press Enter to exit" }
 Stop-DownloadJobs
 if ($failCount -gt 0) { exit 1 } else { exit 0 }
