@@ -29,6 +29,10 @@ try {
 const VECTORIZER_BACKEND_URL = process.env.VECTORIZER_BACKEND_URL || 'http://127.0.0.1:8000/api/v1/vectorize'
 const TXT2IMG_BACKEND_URL = process.env.TXT2IMG_BACKEND_URL || 'http://127.0.0.1:9001/api/v1/txt2img'
 
+/**
+ * 由业务接口 URL 推导出对应的关闭接口地址（同 host/port，路径换成 /shutdown）。
+ * URL 非法时返回 null，调用方会过滤掉。
+ */
 function deriveShutdownUrl(apiUrl) {
   try {
     const u = new URL(apiUrl)
@@ -46,6 +50,10 @@ const SHUTDOWN_URLS = [
 
 // ── 后端路径解析 ──
 
+/**
+ * 返回后端资源目录（含两个 EXE 与各 .ps1 脚本）。
+ * 打包态为 resources/backend；开发态返回 null —— 开发模式不自动管理后端进程。
+ */
 function getBackendDir() {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'backend')
@@ -54,6 +62,12 @@ function getBackendDir() {
   return null
 }
 
+/**
+ * 枚举验收脚本可能所在的路径。
+ *
+ * 打包后 tests/ 与安装目录的相对关系会因 NSIS 布局而异（同级、上级等），
+ * 因此同时登记多个候选，由 resolveAcceptanceScriptPath 逐个探测取第一个存在的。
+ */
 function getAcceptanceScriptCandidates() {
   const candidates = []
 
@@ -82,11 +96,19 @@ function resolveAcceptanceScriptPath() {
 
 // ── 端口检测 ──
 
+/**
+ * 探测本机某端口是否已被占用。
+ * 做法是尝试监听：能监听到说明空闲（随即关闭），报错说明已被占用。
+ * @param {number} port
+ * @returns {Promise<boolean>} true 表示端口被占用
+ */
 function isPortInUse(port) {
   return new Promise((resolve) => {
     const server = netModule.createServer()
+    // 监听报错 → 端口已被别的进程占用
     server.once('error', () => resolve(true))
     server.once('listening', () => {
+      // 能监听 → 端口空闲；立刻释放探测用的临时 server
       server.close()
       resolve(false)
     })
@@ -96,16 +118,25 @@ function isPortInUse(port) {
 
 // ── ComfyUI 引擎管理 ──
 
+/** 返回 ComfyUI 便携版的内层目录（引擎解压后的实际根目录）。 */
 function getComfyUIPortableDir(backendDir) {
   return path.join(backendDir, 'ComfyUI_windows_portable_nvidia', 'ComfyUI_windows_portable')
 }
 
+/**
+ * 判断 ComfyUI 引擎是否已就绪。
+ * 以 `ComfyUI/main.py` 作为哨兵文件；开发模式下不管理引擎，直接视为就绪。
+ */
 function isComfyUIReady(backendDir) {
   if (!backendDir) return true // 开发模式跳过
   const sentinel = path.join(getComfyUIPortableDir(backendDir), 'ComfyUI', 'main.py')
   return fsSync.existsSync(sentinel)
 }
 
+/**
+ * 把下载脚本上报的任务名映射为其落盘文件路径，用于轮询文件大小推算进度。
+ * 同一文件在脚本里可能以「别名」或「带扩展名」两种名字上报，故两者都登记。
+ */
 function getEngineDownloadTrackPath(backendDir, taskName) {
   const taskPaths = {
     '7za.exe': path.join(backendDir, '7za920.zip'),
@@ -119,6 +150,20 @@ function getEngineDownloadTrackPath(backendDir, taskName) {
   return taskPaths[taskName] || null
 }
 
+/**
+ * 调用 PowerShell 脚本下载并解压 ComfyUI 引擎（含两个自定义节点）。
+ *
+ * 进度反馈机制：脚本以 `ENGINEDL:` 前缀输出结构化事件行（TOTAL/START/DONE/
+ * SKIP/ERROR/COMPLETE），本函数解析这些行驱动进度回调；由于脚本不报告字节级
+ * 进度，额外用 2 秒定时器轮询下载文件的大小来推算速度与 ETA。
+ *
+ * 完成时会校验三处哨兵：ComfyUI/main.py、GGUF 节点、Inspyrenet 节点，
+ * 任一缺失都视为失败——避免「脚本退出码为 0 但产物不全」的假成功。
+ *
+ * @param {string} backendDir - 后端资源目录（含各 .ps1 脚本）
+ * @param {Function} [onProgress] - 进度回调
+ * @returns {Promise<{ok:number, skip:number, fail:number}>}
+ */
 function downloadComfyUIEngine(backendDir, onProgress) {
   return new Promise((resolve, reject) => {
     const ps1Path = path.join(backendDir, 'download-comfyui-engine.ps1')
@@ -145,17 +190,20 @@ function downloadComfyUIEngine(backendDir, onProgress) {
     })
     engineDownloadProc = proc
 
+    // 脚本事件驱动的计数与状态
     let totalFiles = 0
     let completedFiles = 0
     let failedFiles = 0
     let currentFileName = ''
     let currentFileSize = ''
     let finalResult = null
+    // stdout 按行切分，跨 chunk 的半行留到下次拼接
     let stdoutBuffer = ''
     // 文件大小轮询跟踪（与模型下载一致）
     let trackedFiles = []
     let startedDownloading = false
 
+    /** 解析脚本输出的 `ENGINEDL:` 事件行并更新计数、触发进度回调。 */
     const handleEngineOutputLines = (lines) => {
       for (const line of lines) {
         if (!line.startsWith('ENGINEDL:')) continue
@@ -163,9 +211,11 @@ function downloadComfyUIEngine(backendDir, onProgress) {
         const type = parts[0]
 
         switch (type) {
+          // 脚本先告知总数，进度条据此换算整体百分比
           case 'TOTAL':
             totalFiles = parseInt(parts[1], 10) || 0
             break
+          // 开始下载某个组件：登记到跟踪列表以便轮询其大小
           case 'START':
             currentFileName = parts[1] || ''
             currentFileSize = parts[2] || ''
@@ -195,6 +245,7 @@ function downloadComfyUIEngine(backendDir, onProgress) {
               })
             }
             break
+          // 组件完成或已存在被跳过：两者都推进整体进度，并移出跟踪列表
           case 'DONE':
           case 'SKIP':
             completedFiles++
@@ -214,6 +265,7 @@ function downloadComfyUIEngine(backendDir, onProgress) {
               })
             }
             break
+          // 单个组件失败：仍计入已完成数（否则总进度永远到不了 100%），另计失败数
           case 'ERROR':
             completedFiles++
             failedFiles++
@@ -230,6 +282,7 @@ function downloadComfyUIEngine(backendDir, onProgress) {
               })
             }
             break
+          // 脚本收尾：汇总 ok/skip/fail，并作为最终结果留存
           case 'COMPLETE':
             const ok = parseInt(parts[1], 10) || 0
             const skip = parseInt(parts[2], 10) || 0
@@ -253,6 +306,7 @@ function downloadComfyUIEngine(backendDir, onProgress) {
       }
     }
 
+    // 按行消费 stdout：最后一段可能是半行，留到下次拼接
     proc.stdout.on('data', (chunk) => {
       stdoutBuffer += chunk.toString()
       const lines = stdoutBuffer.split(/\r?\n/)
@@ -261,6 +315,7 @@ function downloadComfyUIEngine(backendDir, onProgress) {
     })
 
     // 每 2 秒轮询文件大小，推算速度/ETA/百分比
+    // 脚本不报告字节级进度，只能靠「文件大小的增量」反推下载速率
     const progressInterval = setInterval(() => {
       if (trackedFiles.length === 0) return
 
@@ -308,9 +363,11 @@ function downloadComfyUIEngine(backendDir, onProgress) {
                   maxFilePct = Math.min(100, Math.round((currentSize / tf.remoteSize) * 100))
                 }
               }
+              // 记录本次采样点，作为下次算增量的基准
               tf.lastSize = currentSize
               tf.lastTime = now
             } else if (tf.lastSize === 0 && currentSize > 0) {
+              // 首次看到文件出现：只建立基准，不产生速度（此时算不出增量）
               tf.lastSize = currentSize
               tf.lastTime = now
             }
@@ -334,10 +391,12 @@ function downloadComfyUIEngine(backendDir, onProgress) {
       }
     }, 2000)
 
+    // stderr 仅记录，不参与进度解析（脚本的正常输出走 stdout）
     proc.stderr.on('data', (chunk) => {
       console.warn('[download-comfyui-engine stderr]', chunk.toString())
     })
 
+    // 进程级失败（如 powershell 无法启动）：清理定时器与全局引用后报错
     proc.on('error', (err) => {
       clearInterval(progressInterval)
       if (engineDownloadProc === proc) engineDownloadProc = null
@@ -347,10 +406,12 @@ function downloadComfyUIEngine(backendDir, onProgress) {
     proc.on('close', (code) => {
       clearInterval(progressInterval)
       if (engineDownloadProc === proc) engineDownloadProc = null
+      // 冲刷残留的半行，避免最后一条事件被丢掉
       if (stdoutBuffer.trim()) {
         handleEngineOutputLines([stdoutBuffer.trim()])
         stdoutBuffer = ''
       }
+      // 脚本异常退出且没有逐项失败记录 → 整体失败
       if (code !== 0 && failedFiles === 0) {
         reject(new Error(`引擎下载脚本异常退出 (退出码: ${code})`))
         return
@@ -381,6 +442,7 @@ function downloadComfyUIEngine(backendDir, onProgress) {
           totalFiles: totalFiles || completedFiles
         })
       }
+      // 三处哨兵校验：脚本退出码为 0 不代表产物齐全，必须逐项确认
       // 验证 sentinel + GGUF
       if (!isComfyUIReady(backendDir)) {
         reject(new Error('引擎下载后未找到 ComfyUI/main.py'))
@@ -429,6 +491,10 @@ const REQUIRED_MODEL_FILES = [
   ['inspyrenet/.transparent-background', 'ckpt_base.pth', 150 * 1024 ** 2, '170 MB'],
 ]
 
+/**
+ * 把 REQUIRED_MODEL_FILES 展开为完整的文件路径对象列表。
+ * completePath 指向下载脚本写入的「完成标记」，可用于区分「下载中」与「已完成」。
+ */
 function getRequiredModelPaths(backendDir) {
   const modelsDir = getComfyUIModelsDir(backendDir)
   return REQUIRED_MODEL_FILES.map(([subdir, filename, minBytes, sizeLabel]) => {
@@ -437,6 +503,13 @@ function getRequiredModelPaths(backendDir) {
   })
 }
 
+/**
+ * 找出缺失或体积不足的模型文件。
+ *
+ * 判定标准是「存在且不小于预期体积」——只判断存在会把下载中断产生的
+ * 半截文件误认为完整，因此体积下限是必要的第二重校验。
+ * @returns {Promise<Array>} 缺失模型列表（空数组表示齐全）
+ */
 async function getMissingModels(backendDir) {
   if (!backendDir) return []
   const missing = []
@@ -445,17 +518,27 @@ async function getMissingModels(backendDir) {
       const stat = await fs.stat(model.filePath)
       if (!stat.isFile() || stat.size < model.minBytes) missing.push(model)
     } catch {
+      // 文件不存在（stat 抛错）同样计入缺失
       missing.push(model)
     }
   }
   return missing
 }
 
+/** 判断模型是否齐全；开发模式不管理模型，直接返回 true。 */
 async function checkModelsExist(backendDir) {
   if (!backendDir) return true // 开发模式跳过
   return (await getMissingModels(backendDir)).length === 0
 }
 
+/**
+ * 调用 PowerShell 脚本下载全部 AI 模型（约 30 GB）。
+ *
+ * 进度机制与引擎下载一致：解析脚本输出的结构化事件行 + 轮询文件大小推算速率。
+ * @param {string} backendDir - 后端资源目录
+ * @param {Function} [onProgress] - 进度回调
+ * @returns {Promise<Object>} 下载结果统计
+ */
 function downloadModels(backendDir, onProgress) {
   return new Promise((resolve, reject) => {
     const ps1Path = path.join(backendDir, 'download-models.ps1')
@@ -497,6 +580,7 @@ function downloadModels(backendDir, onProgress) {
     let startedDownloading = false
     let stdoutBuffer = ''
 
+    /** 解析脚本输出的 `MODELDL:` 事件行并更新计数、触发进度回调。 */
     const handleDownloadOutputLines = (lines) => {
       for (const line of lines) {
         if (!line.startsWith('MODELDL:')) continue
@@ -507,6 +591,7 @@ function downloadModels(backendDir, onProgress) {
           case 'TOTAL':
             totalFiles = parseInt(parts[1], 10) || 0
             break
+          // 开始下载某个模型：登记到跟踪列表（需同时知道子目录才能拼出路径）
           case 'START':
             currentFileName = parts[1] || ''
             currentSubdir = parts[2] || ''
@@ -539,6 +624,7 @@ function downloadModels(backendDir, onProgress) {
               })
             }
             break
+          // 组件完成或已存在被跳过：两者都推进整体进度，并移出跟踪列表
           case 'DONE':
           case 'SKIP':
             completedFiles++
@@ -559,6 +645,7 @@ function downloadModels(backendDir, onProgress) {
               })
             }
             break
+          // 单个模型失败：仍计入已完成数（否则总进度到不了 100%），另计失败数
           case 'ERROR':
             completedFiles++
             failedFiles++
@@ -597,10 +684,11 @@ function downloadModels(backendDir, onProgress) {
               })
             }
             break
+          // 这些只是信息提示，不触发进度推送
           case 'CHECK':
           case 'RESUME':
-            // 这些只是信息提示，不触发进度推送
             break
+          // 握手类事件无需处理（脚本已就绪 / 引擎校验通过）
           case 'READY':
           case 'ENGINE_OK':
             break
@@ -616,6 +704,7 @@ function downloadModels(backendDir, onProgress) {
     })
 
     // 每 2 秒轮询文件大小，推算速度/ETA/百分比
+    // 脚本不报告字节级进度，只能靠「文件大小的增量」反推下载速率
     const progressInterval = setInterval(() => {
       if (trackedFiles.length === 0) return
 
@@ -631,9 +720,11 @@ function downloadModels(backendDir, onProgress) {
             const now = Date.now()
             const elapsedSecs = (now - tf.lastTime) / 1000
 
+            // 间隔不足 1.5 秒或文件没长，说明采样窗口太短或下载停滞，跳过本次测算
             if (elapsedSecs >= 1.5 && currentSize > tf.lastSize) {
               const bytesPerSec = (currentSize - tf.lastSize) / elapsedSecs
               // 尝试获取远程总大小
+              // 脚本只给「12.3 GB」这类可读字符串，首次采样时解析为字节数并缓存
               if (tf.remoteSize <= 0) {
                 const sizeStr = currentFileSize || ''
                 if (sizeStr.includes('GB')) {
@@ -665,9 +756,11 @@ function downloadModels(backendDir, onProgress) {
                   maxFilePct = Math.min(100, Math.round((currentSize / tf.remoteSize) * 100))
                 }
               }
+              // 记录本次采样点，作为下次算增量的基准
               tf.lastSize = currentSize
               tf.lastTime = now
             } else if (tf.lastSize === 0 && currentSize > 0) {
+              // 首次看到文件出现：只建立基准，不产生速度（此时算不出增量）
               tf.lastSize = currentSize
               tf.lastTime = now
             }
@@ -705,6 +798,7 @@ function downloadModels(backendDir, onProgress) {
     proc.on('close', (code) => {
       clearInterval(progressInterval)
       if (modelDownloadProc === proc) modelDownloadProc = null
+      // 冲刷残留的半行，避免最后一条事件被丢掉
       if (stdoutBuffer.trim()) {
         handleDownloadOutputLines([stdoutBuffer.trim()])
         stdoutBuffer = ''
@@ -740,6 +834,13 @@ function downloadModels(backendDir, onProgress) {
 
 // ── 后端进程生命周期 ──
 
+/**
+ * 启动一个后端 EXE 子进程。
+ * 无窗口运行；stdout/stderr 保留管道便于主进程记录日志。
+ * @param {string} exePath - 后端可执行文件路径
+ * @param {string} cwd - 工作目录（后端需要在此找到 workflows/ 等资源）
+ * @returns {import('child_process').ChildProcess}
+ */
 function spawnBackend(exePath, cwd) {
   if (!fsSync.existsSync(exePath)) {
     throw new Error(`未找到后端程序: ${exePath}`)
@@ -751,6 +852,7 @@ function spawnBackend(exePath, cwd) {
     windowsHide: true,
   })
 
+  // 启动失败（如文件损坏）只记录，由后续的健康检查判定超时
   proc.on('error', (err) => {
     console.error(`[backend] ${path.basename(exePath)} 进程错误:`, err.message)
   })
@@ -758,6 +860,11 @@ function spawnBackend(exePath, cwd) {
   return proc
 }
 
+/**
+ * 终止进程树。
+ * Windows 上必须用 taskkill /T —— 后端会派生 uvicorn worker 等子进程，
+ * 只杀父进程会留下孤儿进程继续占用端口。
+ */
 function killProcessTree(proc) {
   if (!proc || proc.killed || !proc.pid) return
   try {
@@ -770,10 +877,18 @@ function killProcessTree(proc) {
       proc.kill('SIGTERM')
     }
   } catch (_) {
+    // 兜底：taskkill 不可用时退回普通 kill
     try { proc.kill() } catch {}
   }
 }
 
+/**
+ * 轮询健康检查端点，直到服务就绪或超时。
+ *
+ * 每次探测用 3 秒短超时，避免单次请求挂住整个轮询；等待期间按已用时间
+ * 上报 0–99% 的进度（成功时才补到 100%）。
+ * @returns {Promise<{ready:boolean, service?:string, error?:string}>}
+ */
 async function waitForHealthz(url, timeoutMs = 30000, onProgress) {
   const deadline = Date.now() + timeoutMs
   let lastError = null
@@ -805,6 +920,13 @@ async function waitForHealthz(url, timeoutMs = 30000, onProgress) {
   return { ready: false, error: lastError?.message || '服务启动超时' }
 }
 
+/**
+ * 探测指定端口上的后端健康状态，并核对它是否为预期服务。
+ *
+ * `matches` 区分「端口被占但是别的程序」与「本应用的后端已在运行」——
+ * 前者需要报错提示用户，后者可以直接复用。
+ * @returns {Promise<{running:boolean, matches:boolean, service:string|null}>}
+ */
 async function checkBackendHealth(port, expectedService) {
   try {
     const resp = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(2000) })
@@ -819,6 +941,17 @@ async function checkBackendHealth(port, expectedService) {
   return { running: false, matches: false, service: null }
 }
 
+/**
+ * 启动两个后端并等待其就绪（矢量化 8000 优先，随后文生图 9001）。
+ *
+ * 每个后端都遵循同一套三分支逻辑：
+ *   1. 端口上已是本应用的后端 → 复用，不重复拉起；
+ *   2. 端口被其它程序占用 → 直接报错（避免静默连到错误的服务）；
+ *   3. 端口空闲 → 拉起进程并轮询 /healthz 直到就绪。
+ *
+ * 开发模式（backendDir 为空）下不管理后端，由开发者自行启动。
+ * @returns {Promise<{txt2imgReady:boolean, vectorizerReady:boolean}>}
+ */
 async function startBackends(backendDir, onProgress) {
   if (!backendDir) {
     // 开发模式：不做任何事
@@ -836,6 +969,7 @@ async function startBackends(backendDir, onProgress) {
   const vecExe = path.join(backendDir, 'vectorizer-backend.exe')
 
   // 检查端口是否已被占用
+  // 三种结果：本应用后端已在跑（复用）/ 别的程序占了（报错）/ 空闲（拉起）
   const vecHealth = await checkBackendHealth(8000, 'vectorizer-api')
   if (vecHealth.running && vecHealth.matches) {
     if (onProgress) {
@@ -866,7 +1000,7 @@ async function startBackends(backendDir, onProgress) {
   // ── 文生图后端 (端口 9001) ──
   const txt2imgExe = path.join(backendDir, 'txt2img-backend.exe')
 
-  // 检查端口是否已被占用
+  // 检查端口是否已被占用（判定逻辑与矢量化后端一致）
   const t2iHealth = await checkBackendHealth(9001, 'txt2img-api')
   if (t2iHealth.running && t2iHealth.matches) {
     if (onProgress) {
@@ -894,16 +1028,23 @@ async function startBackends(backendDir, onProgress) {
     onProgress({ step: 3, phase: 'done', message: '所有服务已就绪', percent: 100 })
   }
 
+  // 标记到全局启动状态，供渲染进程查询
   startupState.backendsRunning = true
   return { txt2imgReady: true, vectorizerReady: true }
 }
 
 // ── 启动编排 ──
 
+/**
+ * 启动编排总入口：按顺序完成引擎检查、模型检查、后端启动三个阶段。
+ * 各阶段的进度通过 splash 窗口的 `splash:progress` 通道推送给启动页。
+ * @param {import('electron').BrowserWindow} splashWin - 启动页窗口
+ */
 async function runStartupSequence(splashWin) {
   const backendDir = getBackendDir()
 
   // 向 splash 发送进度
+  // 加 isDestroyed 判断：用户可能已关闭启动页，此时发送会抛错
   const sendProgress = (data) => {
     if (splashWin && !splashWin.isDestroyed()) {
       splashWin.webContents.send('splash:progress', data)
@@ -912,6 +1053,7 @@ async function runStartupSequence(splashWin) {
 
   try {
     // ── 步骤 1: 检查 / 下载 ComfyUI 引擎 ──
+    // 三条分支：无脚本（打包不完整）→ 降级；引擎缺失 → 询问用户；已就绪 → 直接过
     currentStartupStep = 1
     sendProgress({ step: 1, phase: 'checking', message: '正在检查推理引擎...', percent: -1 })
 
@@ -949,6 +1091,7 @@ async function runStartupSequence(splashWin) {
     currentStartupStep = 2
     sendProgress({ step: 2, phase: 'checking', message: '正在检查 AI 模型...', percent: -1 })
 
+    // 引擎被跳过时模型也无从加载，直接连带跳过（避免白跑一遍体积校验）
     if (startupState.engineSkipped) {
       sendProgress({ step: 2, phase: 'done', message: '引擎未安装，跳过模型检查', percent: 100 })
       startupState.modelsSkipped = true
@@ -1014,13 +1157,20 @@ async function runStartupSequence(splashWin) {
 let currentStartupStep = 1
 
 // 等待 splash 窗口中用户的操作
+// 用 EventEmitter 把「启动流程」与「用户点击」解耦：流程侧 await 一个 Promise，
+// 点击侧通过 IPC 触发事件，无需把 resolve 回调层层透传
 const EventEmitter = require('events')
 class SplashActionEmitter extends EventEmitter {}
 const splashActions = new SplashActionEmitter()
 const SPLASH_ACTION_EVENT = 'splash-action'
 
+/**
+ * 挂起等待用户在启动页上做出选择（下载 / 跳过）。
+ * @returns {Promise<string>} 用户选择的 action 标识
+ */
 function waitForSplashAction() {
   return new Promise((resolve) => {
+    // once：只消费第一个动作，避免后续误触再次唤醒已结束的等待
     splashActions.once(SPLASH_ACTION_EVENT, (action) => {
       resolve(action)
     })
@@ -1037,6 +1187,7 @@ ipcMain.on('splash:action', (_event, data) => {
   }
 
   if (action) {
+    // 窗口控制类动作就地处理，不进入启动流程的等待队列
     if (action === 'minimize-window') {
       const win = BrowserWindow.fromWebContents(_event.sender)
       if (win && !win.isDestroyed()) win.minimize()
@@ -1044,6 +1195,7 @@ ipcMain.on('splash:action', (_event, data) => {
     }
 
     // Generic download/skip/retry actions go to waitForSplashAction
+    // 退出应用需要走完整清理流程，不能直接 process.exit
     if (action === 'exit-app') {
       forceQuit()
     } else {
@@ -1054,6 +1206,10 @@ ipcMain.on('splash:action', (_event, data) => {
 
 // ── 窗口管理 ──
 
+/**
+ * 解析应用图标路径，优先 PNG（Linux/macOS），回退 ICO（Windows）。
+ * 两者都不存在时返回 undefined，交给 Electron 使用默认图标。
+ */
 function getAppIcon() {
   const iconPng = path.join(__dirname, '..', 'assets', 'icon.png')
   if (fsSync.existsSync(iconPng)) return iconPng
@@ -1062,6 +1218,10 @@ function getAppIcon() {
   return undefined
 }
 
+/**
+ * 创建启动页窗口（无边框、置顶、不可缩放）。
+ * show: false + ready-to-show 再显示，避免白屏闪烁。
+ */
 function createSplashWindow() {
   const win = new BrowserWindow({
     width: 520,
@@ -1073,6 +1233,7 @@ function createSplashWindow() {
     show: false,
     backgroundColor: '#f7f3ea',
     icon: getAppIcon(),
+    // 与主窗口一致的安全配置：contextIsolation 开启、禁用 nodeIntegration
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -1089,6 +1250,10 @@ function createSplashWindow() {
   return win
 }
 
+/**
+ * 创建主窗口。
+ * 有 VITE_DEV_SERVER_URL 时加载开发服务器并打开 DevTools；否则加载打包产物。
+ */
 function createMainWindow() {
   const win = new BrowserWindow({
     width: 1080,
@@ -1121,6 +1286,7 @@ function createMainWindow() {
   return win
 }
 
+/** 创建主窗口并登记到模块级引用，窗口关闭时清空以便重建。 */
 function showMainWindow() {
   mainWin = createMainWindow()
   mainWin.on('closed', () => {
@@ -1129,6 +1295,10 @@ function showMainWindow() {
   return mainWin
 }
 
+/**
+ * 解析 data URL 为字节。
+ * 不是 data URL 时按普通文本处理（用于容忍调用方直接传裸内容）。
+ */
 function parseDataUrl(dataUrl) {
   const match = /^data:(.+?)(;base64)?,(.*)$/s.exec(dataUrl)
   if (!match) {
@@ -1140,6 +1310,11 @@ function parseDataUrl(dataUrl) {
   return isBase64 ? Buffer.from(data, 'base64') : Buffer.from(decodeURIComponent(data), 'utf8')
 }
 
+/**
+ * 解析产物输出根目录，优先级：环境变量 > 按运行形态推导的默认目录。
+ * 开发态落在项目根的 outputs/，打包态落在安装目录的 outputs/
+ * （与 gen2vec_cli.exe 同级，便于用户找到 CLI 与桌面端的共同产物）。
+ */
 function getOutputRoot() {
   if (process.env.ART_TEXT_OUTPUT_ROOT) {
     return path.resolve(process.env.ART_TEXT_OUTPUT_ROOT)
@@ -1158,6 +1333,7 @@ function getOutputRoot() {
   return path.resolve(installDir, 'outputs')
 }
 
+/** 批量序号格式化为 3 位零填充（非法或非正数按 1 处理）。 */
 function padTaskIndex(index) {
   const safeIndex = Number.isFinite(Number(index)) && Number(index) > 0 ? Number(index) : 1
   return String(Math.trunc(safeIndex)).padStart(3, '0')
@@ -1165,11 +1341,16 @@ function padTaskIndex(index) {
 
 const { transliterateChinese, safeTaskSlug } = require('./pinyin.cjs')
 
+/**
+ * 组装任务目录名：task_<时间戳>[_<序号>]_<slug>_seed-<种子>。
+ * 规则与 apps/cli/src/utils/output.mjs 保持一致，保证两端产物可互相识别。
+ */
 function buildTaskDirectoryName({ startedAt = null, mode = 'single', index = 1, text = 'art-text', seed = 0 } = {}) {
   const taskId = mode === 'batch' ? `${formatTaskStartedAt(startedAt)}_${padTaskIndex(index)}` : formatTaskStartedAt(startedAt)
   return `task_${taskId}_${safeTaskSlug(text)}_seed-${seed || 0}`
 }
 
+/** 时间格式化为 YYYYMMDD_HHMMSS_mmm；非法时间回退当前时刻。 */
 function formatTaskStartedAt(startedAt) {
   const date = startedAt ? new Date(startedAt) : new Date()
   const validDate = Number.isNaN(date.getTime()) ? new Date() : date
@@ -1187,6 +1368,10 @@ function formatTaskStartedAt(startedAt) {
   ].join('')
 }
 
+/**
+ * 创建唯一的任务目录（重名时追加 _2、_3… 避让）并返回其路径上下文。
+ * @returns {Promise<Object>} 含 paths 映射的任务信息
+ */
 async function ensureUniqueTaskDir({ outputRoot, mode = 'single', index = 1, text = 'art-text', seed = 0, startedAt = null, summaryDir = null }) {
   const root = path.resolve(outputRoot || getOutputRoot())
   await fs.mkdir(root, { recursive: true })
@@ -1194,6 +1379,7 @@ async function ensureUniqueTaskDir({ outputRoot, mode = 'single', index = 1, tex
   const baseName = buildTaskDirectoryName({ startedAt, mode, index, text, seed })
   let taskName = baseName
   let taskDir = path.join(root, taskName)
+  // 重名避让计数器：从 2 开始，首次重名得到 _2
   let counter = 2
   while (fsSync.existsSync(taskDir)) {
     taskName = `${baseName}_${counter}`
@@ -1205,8 +1391,10 @@ async function ensureUniqueTaskDir({ outputRoot, mode = 'single', index = 1, tex
   return buildTaskInfo({ outputRoot: root, taskDir, taskName, mode, index, seed, summaryDir })
 }
 
+/** 由任务目录推导全部产物的标准路径（与 CLI 端 buildTaskInfo 规则一致）。 */
 function buildTaskInfo({ outputRoot, taskDir, taskName, mode, index, seed, summaryDir }) {
   const summaryRoot = summaryDir || (mode === 'batch-batch' ? taskDir : outputRoot)
+  // 全部产物路径在此集中定义，写与读共用同一份规则
   const paths = {
     original: path.join(taskDir, 'original.png'),
     transparent: path.join(taskDir, 'transparent.png'),
@@ -1224,6 +1412,10 @@ function buildTaskInfo({ outputRoot, taskDir, taskName, mode, index, seed, summa
   return { outputRoot, taskDir, taskName, mode, index, seed, paths }
 }
 
+/**
+ * 把任意形态的产物数据转为 Buffer（空值返回 null，由调用方跳过落盘）。
+ * 对象按 JSON 缩进序列化；非文本且是 data URL 时解码其原始字节。
+ */
 function bufferForArtifact(data, isText = false) {
   if (data === undefined || data === null || data === '') return null
   if (Buffer.isBuffer(data)) return data
@@ -1233,6 +1425,7 @@ function bufferForArtifact(data, isText = false) {
   return Buffer.from(str, 'utf8')
 }
 
+/** 落盘单个产物文件；自动建父目录，数据为空时返回 null 表示跳过。 */
 async function writeArtifactFile(filePath, data, isText = false) {
   const buffer = bufferForArtifact(data, isText)
   if (!buffer) return null
@@ -1241,12 +1434,16 @@ async function writeArtifactFile(filePath, data, isText = false) {
   return filePath
 }
 
+/** CSV 字段转义：含引号/逗号/换行时用双引号包裹，内部引号翻倍。 */
 function csvEscape(value) {
   const text = value === undefined || value === null ? '' : String(value)
   if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`
   return text
 }
 
+/**
+ * 从元数据抽取 4 项质量指标；缺失值统一归一为空串，便于写入 CSV 与日志。
+ */
 function extractQualityMetrics(metadata = {}) {
   const generationMs = metadata?.generation?.duration_ms
   const vectorMs = metadata?.stats?.elapsed_ms
@@ -1262,6 +1459,11 @@ function extractQualityMetrics(metadata = {}) {
   }
 }
 
+/**
+ * 把质量指标以 key=value 形式 upsert 进 run.log。
+ * 采用「存在则替换、不存在则追加」：两阶段写日志时后写的指标能覆盖前次的空值，
+ * 而不会产生重复行。
+ */
 function appendQualityMetricsToRunLog(runLog = '', metadata = {}) {
   if (!runLog) return runLog
   const metrics = extractQualityMetrics(metadata)
@@ -1281,7 +1483,12 @@ function appendQualityMetricsToRunLog(runLog = '', metadata = {}) {
   ].reduce((text, [key, value]) => upsertMetric(text, key, value), runLog)
 }
 
+/**
+ * 向批量汇总 CSV 追加一行；首次写入时先输出表头。
+ * 列顺序由 columns 固定，保证多次运行追加到同一文件时列对齐。
+ */
 async function appendBatchSummaryCsv(summaryPath, row = {}) {
+  // 固定的列顺序（也是表头顺序）
   const columns = [
     'task_id', 'task_name', 'mode', 'status', 'text', 'prompt', 'seed', 'resolution', 'task_dir',
     'run_log_path',
@@ -1294,6 +1501,12 @@ async function appendBatchSummaryCsv(summaryPath, row = {}) {
   await fs.appendFile(summaryPath, content, 'utf8')
 }
 
+/**
+ * 为「按旧协议只传了 key + data」的产物推断文件扩展名。
+ *
+ * 优先看键名语义（svg / metadata / log / 图片类），键名不足以判断时再看内容
+ * 特征（`<svg`、`{`、`data:image/`），最后退回 txt / bin。
+ */
 function inferLegacyExt(key, data) {
   const lowerKey = String(key).toLowerCase()
   const str = typeof data === 'string' ? data.trim() : ''
@@ -1305,6 +1518,11 @@ function inferLegacyExt(key, data) {
   return 'bin'
 }
 
+/**
+ * 构造工作流快照三件套（workflow_api.json / nodes.md / model_dependencies.json）。
+ * 调用方已拿到后端真实数据时原样采用，否则退化为基于 metadata 的运行快照，
+ * 保证产物结构始终齐全。
+ */
 function buildWorkflowArtifacts({ metadata = {}, taskName = '', seed = 0, mode = 'single', workflowApi = null, modelDependencies = null }) {
   if (workflowApi || modelDependencies) {
     return {
@@ -1348,12 +1566,23 @@ function buildWorkflowArtifacts({ metadata = {}, taskName = '', seed = 0, mode =
   }
 }
 
+/**
+ * 通过 Electron net 模块向后端发起 POST 请求（走 Chromium 网络栈，不受 Node 网络策略影响）。
+ *
+ * 超时控制用「外层 setTimeout + request.abort」而非 fetch 的 signal：
+ * Electron 的 net.request 没有原生超时，必须手动兜底，否则请求可能永久挂起。
+ * `settled` 标志保证 resolve/reject 只生效一次（超时与响应可能同时到达）。
+ *
+ * @param {string} apiUrl - 完整接口 URL
+ * @param {Object} payload - 请求体；其中的 `__timeoutMs` 会被取出作为超时值，不发给后端
+ */
 async function requestBackend(apiUrl, payload) {
   return new Promise((resolve, reject) => {
     let request = null
     let settled = false
     let timer = null
 
+    /** 幂等的收尾：只允许第一次调用生效，并清理超时定时器。 */
     const finish = (fn, value) => {
       if (settled) return
       settled = true
@@ -1363,6 +1592,7 @@ async function requestBackend(apiUrl, payload) {
 
     try {
       const requestUrl = new URL(apiUrl)
+      // 把 __timeoutMs 从请求体中剥离——它只是本函数的控制参数，不是后端字段
       const { __timeoutMs = 300000, ...backendPayload } = payload || {}
       request = net.request({
         method: 'POST',
@@ -1392,6 +1622,7 @@ async function requestBackend(apiUrl, payload) {
               finish(reject, err)
             }
           } else {
+            // 非 2xx：尽力从 FastAPI 的 {detail} 字段取出可读错误，取不到就只报状态码
             let detail = ''
             try {
               const parsed = JSON.parse(body)
@@ -1416,10 +1647,15 @@ async function requestBackend(apiUrl, payload) {
   })
 }
 
+// ── 渲染进程可调用的 IPC 处理器 ──
+// 命名统一为 art-text/<动作>，与 preload.cjs 暴露的方法一一对应
+
+/** 返回应用版本号（取自 package.json）。 */
 ipcMain.handle('art-text/get-app-version', async () => {
   return app.getVersion()
 })
 
+/** 判断是否处于开发模式（未打包，或 NODE_ENV 非 production）。 */
 ipcMain.handle('art-text/is-dev', async () => {
   return !app.isPackaged || process.env.NODE_ENV !== 'production'
 })
@@ -1452,6 +1688,11 @@ ipcMain.handle('art-text/open-path', async (event, targetPath) => {
   return { ok: true }
 })
 
+/**
+ * 启动验收测试批处理脚本。
+ * 通过 `cmd /c start` 新开一个独立控制台窗口，让用户能看到测试的实时输出；
+ * detached + unref 使该窗口不随本进程退出而被回收。
+ */
 ipcMain.handle('art-text/launch-acceptance-test', async () => {
   if (process.platform !== 'win32') {
     throw new Error('验收测试批处理脚本仅支持 Windows。')
@@ -1464,6 +1705,7 @@ ipcMain.handle('art-text/launch-acceptance-test', async () => {
     ['/d', '/c', 'start', '', scriptPath, '-OutputRoot', outputRoot],
     {
       cwd: path.dirname(scriptPath),
+      // detached：脱离父进程进程组，父进程退出不影响测试窗口
       detached: true,
       stdio: 'ignore',
       windowsHide: false
@@ -1514,6 +1756,7 @@ ipcMain.handle('art-text/write-task-artifacts', async (event, options) => {
     summary: paths.summary || path.join(root, 'batch_summary.csv')
   }
 
+  // 逐个写四类图形产物；缺失的键会被 writeArtifactFile 自动跳过
   const savedFiles = []
   for (const [key, filePath] of [
     ['original', targetPaths.original],
@@ -1521,10 +1764,12 @@ ipcMain.handle('art-text/write-task-artifacts', async (event, options) => {
     ['svg', targetPaths.svg],
     ['preview', targetPaths.preview]
   ]) {
+    // SVG 是文本，其余按二进制/base64 处理
     const saved = await writeArtifactFile(filePath, artifacts[key], key === 'svg')
     if (saved) savedFiles.push(saved)
   }
 
+  // metadata 显式传 null 表示「本次不写」（用于两阶段流程的中间态）
   const shouldWriteMetadata = metadata !== undefined && metadata !== null
   const metadataPayload = shouldWriteMetadata
     ? {
@@ -1561,8 +1806,10 @@ ipcMain.handle('art-text/write-task-artifacts', async (event, options) => {
   }
 
   if (usesTxt2Img) {
+    // 兼容 camelCase 与 snake_case 两种来源命名
     const wfApi = workflowArtifacts?.workflowApi || workflowArtifacts?.workflow_api
     const wfDeps = workflowArtifacts?.modelDependencies || workflowArtifacts?.model_dependencies
+    // 键数 > 2 才认为是「真实工作流」（而非占位快照）
     const hasRealData = wfApi && typeof wfApi === 'object' && Object.keys(wfApi).length > 2
     const fallbackWorkflow = buildWorkflowArtifacts({
       metadata: metadataPayload || {},
@@ -1595,6 +1842,12 @@ ipcMain.handle('art-text/write-task-artifacts', async (event, options) => {
   return { canceled: false, outputRoot: root, taskDir: resolvedTaskDir, taskName: taskName || path.basename(resolvedTaskDir), paths: targetPaths, filePaths: savedFiles }
 })
 
+/**
+ * 删除某个任务目录。
+ *
+ * 安全校验：目标必须位于 outputs 根目录之内——否则渲染进程一旦被注入，
+ * 就能借这个接口删除任意路径。校验用 resolve 后的绝对路径前缀比较。
+ */
 ipcMain.handle('art-text/delete-output-dir', async (event, targetPath) => {
   if (!targetPath || typeof targetPath !== 'string') {
     throw new Error('Invalid path')
@@ -1639,7 +1892,12 @@ function splitDelimitedLine(line, delimiter = ',') {
   return values
 }
 
+/**
+ * 把一条原始输入归一化为标准批次条目。
+ * 接受多种字段别名（text/title/word/content 等），空值统一为 ''。
+ */
 function normalizeBatchItem(item, index = 0) {
+  // 纯字符串输入视为只有文本
   if (typeof item === 'string') {
     return { text: item.trim(), prompt: '', negative: '', seed: '', resolution: '' }
   }
@@ -1653,10 +1911,16 @@ function normalizeBatchItem(item, index = 0) {
   }
 }
 
+/**
+ * 解析批量输入文本，自动识别 JSON / 带表头 CSV / 无表头分隔行三种形态。
+ * 分隔符在 `|`、制表符、逗号之间按行内容择一，与 CLI batch.mjs 行为一致。
+ * @returns {Array<Object>} 归一化后的批次条目列表
+ */
 function parseBatchInputText(content) {
   const trimmed = (content || '').trim()
   if (!trimmed) return []
 
+  // 以 { 或 [ 开头即认为是 JSON
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     const parsed = JSON.parse(trimmed)
     const rows = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.items) ? parsed.items : [])
@@ -1724,6 +1988,10 @@ async function scanHistoryFromFs(outputRoot) {
   return []
 }
 
+/**
+ * 规范化历史索引条目：过滤非法项，并补齐缺失的 outputRoot。
+ * 兼容早期版本写入的、没有 outputRoot 字段的索引文件。
+ */
 function normalizeHistoryIndexEntries(index, indexRoot) {
   if (!Array.isArray(index)) return []
   return index
@@ -1740,9 +2008,11 @@ function normalizeHistoryIndexEntries(index, indexRoot) {
 async function removeDeletedTaskFromIndex(root, deletedDir) {
   const indexPath = path.join(root, 'tasks-index.json')
   try {
+    // 索引文件可能带 BOM（其他工具写入），先剥掉再解析
     const content = await fs.readFile(indexPath, 'utf8')
     let index = JSON.parse(content.replace(/^\uFEFF/, ''))
     const before = index.length
+    // 按绝对路径前缀匹配，连同其子目录一并移除
     index = index.filter(e => !e.taskDir || !path.resolve(e.taskDir).startsWith(path.resolve(deletedDir)))
     if (index.length < before) {
       await fs.writeFile(indexPath, JSON.stringify(index, null, 2), 'utf8')
@@ -1754,6 +2024,11 @@ ipcMain.handle('art-text/scan-fs-history', async (event, outputRoot) => {
   return scanHistoryFromFs(outputRoot)
 })
 
+/**
+ * 读取产物文件内容。
+ * 两种编码模式：text 直接返回字符串（用于 SVG / 元数据），
+ * dataUrl 返回 data URL（用于 <img src> 直接渲染）。
+ */
 ipcMain.handle('art-text/read-output-file', async (event, options) => {
   const { filePath, encoding = 'dataUrl', mime = 'application/octet-stream' } = options || {}
   if (!filePath || typeof filePath !== 'string') {
@@ -1774,6 +2049,7 @@ ipcMain.handle('art-text/generate', async (event, payload) => {
   return requestBackend(TXT2IMG_BACKEND_URL, payload)
 })
 
+/** 弹出系统保存对话框并写入单个文件（data 可为 data URL 或纯文本）。 */
 ipcMain.handle('art-text/save-file', async (event, options) => {
   const win = BrowserWindow.getFocusedWindow()
   const { data, defaultName = 'output', filters = [] } = options || {}
@@ -1792,6 +2068,10 @@ ipcMain.handle('art-text/save-file', async (event, options) => {
   return { canceled: false, filePath }
 })
 
+/**
+ * 选择目录后批量导出全部产物（SVG / 元数据 / 各类 PNG）。
+ * 扩展名按「键名语义 + 内容特征」推断，与 inferLegacyExt 的思路一致。
+ */
 ipcMain.handle('art-text/save-results', async (event, options) => {
   const win = BrowserWindow.getFocusedWindow()
   const { results = {}, fileBase = 'art-text' } = options || {}
@@ -1843,6 +2123,7 @@ ipcMain.handle('art-text/save-results', async (event, options) => {
       continue
     }
 
+    // 键名做文件名消毒：非字母数字下划线一律换成 "-"，避免非法字符
     const safeKey = String(key).replace(/[^a-zA-Z0-9_-]+/g, '-') || 'artifact'
     const filePath = path.join(folder, `${fileBase}_${safeKey}.${ext}`)
     await fs.writeFile(filePath, buffer)
@@ -1857,6 +2138,7 @@ ipcMain.handle('art-text/shutdown-backends', async () => {
   return { ok: true, message: '已向两个后端发送关闭请求' }
 })
 
+/** 返回启动阶段的状态快照（返回副本，避免渲染进程改动到主进程内部状态）。 */
 ipcMain.handle('art-text/get-startup-status', async () => {
   return { ...startupState }
 })
@@ -1873,6 +2155,7 @@ ipcMain.handle('art-text/download-models', async () => {
   }
 
   // 向主窗口发送进度
+  // 复用 splash:progress 通道——主窗口内的同一套进度组件可直接消费
   const sendProgress = (data) => {
     if (mainWin && !mainWin.isDestroyed()) {
       mainWin.webContents.send('splash:progress', data)
@@ -1895,6 +2178,10 @@ ipcMain.handle('art-text/download-models', async () => {
   }
 })
 
+/**
+ * 关闭两个后端：先发优雅关闭请求，再兜底强杀进程树。
+ * 两步都要做——后端可能因卡死而无响应，只发请求会留下僵尸进程占用端口。
+ */
 function shutdownBackends() {
   // 发送优雅关闭请求
   for (const url of SHUTDOWN_URLS) {
@@ -1934,6 +2221,7 @@ function forceQuit() {
   app.exit(0)
 }
 
+/** 只清理「启动阶段」遗留的下载进程（引擎 / 模型），不动已就绪的后端。 */
 function shutdownPreloadTasks() {
   killProcessTree(modelDownloadProc)
   killProcessTree(engineDownloadProc)
@@ -1954,10 +2242,12 @@ app.whenReady().then(async () => {
     let result = await runStartupSequence(splashWin)
 
     // 处理重试
+    // 循环而非递归：用户在错误界面可反复点「重试」，直到成功或选择退出
     while (result && !result.success && result.error) {
       // 等待用户在错误界面选择重试或退出
       const action = await waitForSplashAction()
       if (action === 'retry') {
+        // 清掉上次错误信息，避免重试界面仍显示旧错误
         startupError = null
         result = await runStartupSequence(splashWin)
       } else {
@@ -1982,6 +2272,7 @@ app.whenReady().then(async () => {
     })
   }
 
+  // macOS 风格：点 Dock 图标且无窗口时重建主窗口
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       if (app.isPackaged) {
@@ -1994,6 +2285,7 @@ app.whenReady().then(async () => {
   })
 })
 
+// 所有窗口关闭即退出（macOS 除外，其应用常驻是系统惯例）
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
@@ -2001,6 +2293,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', (event) => {
+  // 拦截默认退出：必须先回收后端与下载进程，否则会留下孤儿进程
   event.preventDefault()
   shutdownBackends()
   shutdownPreloadTasks()

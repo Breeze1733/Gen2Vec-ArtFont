@@ -1,8 +1,10 @@
 <template>
+  <!-- 应用外壳：顶部概览栏 + 三个可切换的主面板（输入 / 输出 / 历史） -->
   <div class="app-shell">
     <header class="hero">
       <div class="hero-content">
         <h1>矢量艺术字生成器</h1>
+        <!-- 主面板切换：切换只改 activeTab，不销毁各面板的状态 -->
         <div class="hero-tabs">
           <button
             :class="['tab-button', { active: activeTab === 'input' }]"
@@ -35,6 +37,7 @@
         </div>
       </div>
 
+      <!-- 运行概览：GPU 档位决定可用功能，模型缺失时给出下载入口 -->
       <div class="hero-panel" aria-label="运行概览">
         <div>
           <span>运行环境</span>
@@ -89,7 +92,7 @@
       </div>
     </header>
 
-    <!-- 输入面板 -->
+    <!-- 输入面板：左侧表单 + 右侧矢量化参数，提交由参数面板的按钮触发 -->
     <div class="main-layout" v-if="activeTab === 'input'">
       <main class="workspace">
         <div class="params-row">
@@ -117,7 +120,7 @@
       </main>
     </div>
 
-    <!-- 输出面板 -->
+    <!-- 输出面板：展示单条/批量的产物，并提供打开目录、预览 SVG 等操作 -->
     <div class="main-layout" v-if="activeTab === 'output'">
       <main class="workspace">
         <ResultPanel
@@ -135,7 +138,7 @@
       </main>
     </div>
 
-    <!-- 历史任务 -->
+    <!-- 历史任务：进入该面板时会刷新一次文件系统历史（含 CLI 产物） -->
     <div class="main-layout" v-if="activeTab === 'history'">
       <HistoryPanel
         :logs="logs"
@@ -156,45 +159,57 @@ import VectorParams from './components/VectorParams.vue'
 import { generateArtBitmap, openPath, parseBatchInput, prepareOutputTask, readOutputFile, deleteOutputDir, saveFile, saveResults, scanFsHistory, vectorizeArtImage, writeTaskArtifacts, getStartupStatus, downloadModels, launchAcceptanceTest, onSplashProgress, removeSplashProgressListener } from './api'
 import { makeThumbnail } from './utils/storage'
 
-// 渲染进程中无法使用 Node.js path 模块，用纯字符串操作替代
+// 渲染进程中无法使用 Node.js path 模块，用纯字符串操作替代。
+// 三个函数都需同时兼容 Windows 反斜杠与 Unix 正斜杠。
+
+/** 拼接目录与文件名，自动按目录已有分隔符风格补分隔符。 */
 const joinPath = (dir, file) => {
   if (!dir) return file
   // 处理 Windows (\\) 和 Unix (/) 两种分隔符
   const sep = dir.includes('\\') ? '\\' : '/'
   return dir.endsWith(sep) ? `${dir}${file}` : `${dir}${sep}${file}`
 }
+/** 取路径最后一段（文件名）。先统一成正斜杠再切分，规避混用分隔符的情况。 */
 const basename = (p) => {
   if (!p) return ''
   // 同时兼容 Windows 和 Unix 路径分隔符
   const parts = p.replace(/\\/g, '/').split('/')
   return parts[parts.length - 1] || ''
 }
+/** 取路径的父目录部分；无分隔符时返回空串。 */
 const dirname = (p) => {
   if (!p) return ''
+  // 取最后一个斜杠（正反均可）的位置作为切分点
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
   return slash >= 0 ? p.slice(0, slash) : ''
 }
 
 // GPU 检测
+// 通过 WebGL 的 renderer 字符串推断显卡型号与档位，进而决定是否放开文生图功能
 const gpuInfo = ref('检测中...')
 const gpuRawRenderer = ref('')
 const gpuDetectFailed = ref(false)
 const hasUsableGpu = ref(false)
 const gpuTier = ref('unknown') // 'discrete' | 'integrated' | 'unknown' | 'none'
 
-// 从 WebGL renderer 字符串中提取可读的 GPU 名称
-// ANGLE: "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU (0x000028E0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
-//   → 提取 "NVIDIA GeForce RTX 4060"
-// 非 ANGLE: "NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2" → 取前几个词
+/**
+ * 从 WebGL renderer 字符串中提取可读的 GPU 名称。
+ *
+ * ANGLE: "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU (0x000028E0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+ *   → 提取 "NVIDIA GeForce RTX 4060"
+ * 非 ANGLE: "NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2" → 取前几个词
+ */
 const _extractGpuLabel = (renderer) => {
   if (!renderer) return ''
   if (renderer.startsWith('ANGLE (')) {
+    // ANGLE 格式：括号内按逗号分段，第 2 段才是显卡名
     const inner = renderer.slice('ANGLE ('.length, renderer.lastIndexOf(')'))
     if (inner) {
       const parts = inner.split(',')
       if (parts.length >= 2) {
         let gpuName = parts[1].trim()
         // 截断到第一个 (0x… 或 Direct3D 之前
+        // 设备 ID 与 D3D 版本号对用户无意义，一律裁掉
         const cutoff = gpuName.search(/\s*\(0x[0-9A-Fa-f]+\)|\s*Direct3D/)
         if (cutoff > 0) gpuName = gpuName.substring(0, cutoff)
         return gpuName
@@ -208,11 +223,21 @@ const _extractGpuLabel = (renderer) => {
   return name.split(' ').slice(0, 5).join(' ')
 }
 
+/**
+ * 检测本机 GPU 并判定档位（discrete / integrated / unknown / none）。
+ *
+ * 用三个维度交叉验证，因为单一来源都不可靠：
+ *   1. WebGL 的 UNMASKED_RENDERER_WEBGL 字符串（最通用）；
+ *   2. WebGPU adapter 信息（可能暴露 WebGL 看不到的独显）；
+ *   3. 关键词匹配 + 档位归一。
+ * 档位决定 UI 是否放开文生图：无 GPU 时只能走图片矢量化。
+ */
 const detectGPU = () => {
   try {
     // 维度 1：WebGL UNMASKED_RENDERER_WEBGL
     const canvas = document.createElement('canvas')
     const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
+    // WebGL 完全不可用 → 判定无 GPU，UI 将限制为矢量化模式
     if (!gl) {
       gpuInfo.value = '未检测到 GPU（WebGL 不可用）'
       gpuTier.value = 'none'
@@ -248,6 +273,8 @@ const detectGPU = () => {
     } catch (_) { /* WebGPU 不可用，忽略 */ }
 
     // 维度 3：综合判定
+    // 先按厂商关键词定档位；无法识别但 renderer 非空时按 unknown 处理
+    // （unknown 仍视为可用，避免误伤小众显卡）
     const renderer = webglRenderer
     const gpuLabel = _extractGpuLabel(renderer)
     if (renderer.includes('NVIDIA') || renderer.includes('AMD') || renderer.includes('Radeon')) {
@@ -276,6 +303,7 @@ const detectGPU = () => {
 }
 
 onMounted(async () => {
+  // 先做 GPU 检测：后续多个初始化分支都依赖它的结果
   detectGPU()
   // 仅在完全没有 GPU 时默认选择图片矢量化模式
   if (!hasUsableGpu.value) {
@@ -295,8 +323,13 @@ onMounted(async () => {
   await mergeFsHistory()
 })
 
+// 当前主面板：input | output | history
 const activeTab = ref('input')
 
+/**
+ * 矢量化预设表（与后端 PRESET_CONFIG 数值保持一致）。
+ * 用户点选预设时整体覆盖 payload.vector；手动改单个参数则标记为「已偏离预设」。
+ */
 const vectorPresets = {
   clean: {
     preset: 'clean',
@@ -336,14 +369,16 @@ const vectorPresets = {
   }
 }
 
+// localStorage 键名：history 存任务列表，history-dirs 存任务目录映射
 const HISTORY_KEY = 'art-text-generator-history'
 const HISTORY_DIR_KEY = 'art-text-generator-history-dirs'
 
-const mode = ref('single')
-const running = ref(false)
+// ── 核心状态 ──
+const mode = ref('single')          // single | batch | vectorize
+const running = ref(false)          // 是否有任务在执行
 const error = ref('')
-const modelsSkipped = ref(false)
-const modelsReady = ref(true)
+const modelsSkipped = ref(false)    // 用户跳过了模型下载
+const modelsReady = ref(true)       // 模型是否就绪（开发模式默认 true）
 const downloadingModels = ref(false)
 const modelDownloadProgress = reactive({
   current: 0,
@@ -359,24 +394,31 @@ const modelDownloadProgress = reactive({
   phase: '',
   result: null
 })
+// 表单载荷：三种模式共用一份，未用到的字段保持默认值
 const payload = reactive({
   text: '',
   prompt: '',
   negative: '',
-  batch: '',
+  batch: '',          // 批量模式的原始输入文本（TXT/CSV/JSON）
   resolution: '1024 x 1024',
   format: 'PNG',
   seed: 0,
-  imageFile: null,
+  imageFile: null,    // 矢量化模式下用户选择的图片
+  // 复制一份预设，避免用户改参数时污染预设表
   vector: { ...vectorPresets.balanced }
 })
 
+/**
+ * 百分比归一化：钳制到 [0, 100] 并取整。
+ * 非法值或负数返回 -1 —— 约定用 -1 表示「进度未知」，与 0%（尚未开始）区分开。
+ */
 const clampPercent = (value) => {
   const n = Number(value)
   if (!Number.isFinite(n) || n < 0) return -1
   return Math.min(100, Math.max(0, Math.round(n)))
 }
 
+/** 重置模型下载进度对象到初始态（开始新一轮下载前调用）。 */
 const resetModelDownloadProgress = () => {
   modelDownloadProgress.current = 0
   modelDownloadProgress.total = 0
@@ -392,6 +434,10 @@ const resetModelDownloadProgress = () => {
   modelDownloadProgress.result = null
 }
 
+/**
+ * 整体下载进度：优先用主进程直接给的 percent；
+ * 未给出时按「已完成 / 总数」自行折算，两者都没有则显示 0。
+ */
 const modelDownloadOverallPercent = computed(() => {
   const direct = clampPercent(modelDownloadProgress.percent)
   if (direct >= 0) return direct
@@ -401,17 +447,20 @@ const modelDownloadOverallPercent = computed(() => {
   return 0
 })
 
+/** 当前文件自身的下载百分比；未知时归零（用于进度条宽度）。 */
 const modelDownloadFilePercent = computed(() => {
   const direct = clampPercent(modelDownloadProgress.filePercent)
   return direct >= 0 ? direct : 0
 })
 
+/** 下载结束后的结果文案：成功 / 跳过 / 失败计数。 */
 const modelDownloadResultText = computed(() => {
   const result = modelDownloadProgress.result
   if (!result) return ''
   return `${result.ok || 0} 成功，${result.skip || 0} 跳过，${result.fail || 0} 失败`
 })
 
+/** 启动验收测试批处理脚本（会新开独立控制台窗口）。 */
 const handleAcceptanceTest = async () => {
   try {
     await launchAcceptanceTest()
@@ -420,6 +469,7 @@ const handleAcceptanceTest = async () => {
   }
 }
 
+/** 切换主面板；进入历史面板时刷新一次文件系统历史，保证能看到 CLI 新产物。 */
 const switchTab = async (tab) => {
   activeTab.value = tab
   if (tab === 'history') {
@@ -427,11 +477,13 @@ const switchTab = async (tab) => {
   }
 }
 
+/** 应用矢量化预设：整体覆盖 6 个底层参数。预设名无效时回退 balanced。 */
 const applyVectorPreset = (presetName) => {
   const preset = vectorPresets[presetName] || vectorPresets.balanced
   Object.assign(payload.vector, preset)
 }
 
+// 结果展示区：image 是用于 <img> 的预览图，其余是各阶段产物
 const result = reactive({
   image: '',
   svg: '',
@@ -441,7 +493,8 @@ const result = reactive({
   transparent: ''
 })
 
-// 批量模式状态
+// ── 批量模式状态 ──
+// batchItems 保存每条数据的产物与状态；batchProgress 只存计数，避免频繁遍历数组
 const batchItems = ref([])
 const batchProgress = reactive({ current: 0, total: 0, completed: 0, failed: 0 })
 const selectedBatchIndex = ref(-1)
@@ -453,15 +506,19 @@ const stageProgress = reactive({
 })
 let progressTimer = null
 
+// ── 当前任务的落盘信息 ──
+// 任务目录是产物的唯一权威来源，恢复历史时按这些路径重新读取文件
 const currentFiles = ref([])
 const currentTaskDir = ref('')
 const currentOutputRoot = ref('')
 const currentTaskPaths = ref(null)
 
+// 历史列表（localStorage 持久化）与其对应的目录映射
 const logs = ref(loadHistory())
 
 const historyDirs = ref(loadHistoryDirs())
 
+/** 从 localStorage 读历史列表；损坏的 JSON 一律视为空列表。 */
 function loadHistory() {
   try {
     return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
@@ -470,6 +527,7 @@ function loadHistory() {
   }
 }
 
+/** 读取「任务 id → 目录信息」映射；同样容忍损坏数据。 */
 function loadHistoryDirs() {
   try {
     return JSON.parse(localStorage.getItem(HISTORY_DIR_KEY) || '{}')
@@ -478,21 +536,25 @@ function loadHistoryDirs() {
   }
 }
 
+/** 持久化历史与目录映射；列表截断到 50 条，避免 localStorage 无限膨胀。 */
 function saveHistory() {
   const trimmed = logs.value.slice(0, 50)
   localStorage.setItem(HISTORY_KEY, JSON.stringify(trimmed))
   localStorage.setItem(HISTORY_DIR_KEY, JSON.stringify(historyDirs.value || {}))
 }
 
+/** 写入某个任务的目录信息（id 统一转字符串，规避数字/字符串键不一致）。 */
 function setHistoryDir(id, payload) {
   historyDirs.value = { ...historyDirs.value, [String(id)]: payload }
   localStorage.setItem(HISTORY_DIR_KEY, JSON.stringify(historyDirs.value))
 }
 
+/** 读取某个任务的目录信息，不存在返回 null。 */
 function getHistoryDir(id) {
   return historyDirs.value?.[String(id)] || null
 }
 
+/** 删除某个任务的目录信息（删除历史条目时一并清理）。 */
 function deleteHistoryDir(id) {
   const next = { ...historyDirs.value }
   delete next[String(id)]
@@ -587,7 +649,10 @@ async function mergeFsHistory() {
       added++
     }
 
+    // 清理「批量子任务」的重复条目：批量任务目录下会为每条数据建一个子目录，
+    // 这些子目录本身不应作为独立历史项出现（父任务已代表整批）
     let removed = 0
+    // 路径归一化：统一分隔符、去掉尾部斜杠、转小写（Windows 路径大小写不敏感）
     const normalizeDir = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
     const batchRoots = fsEntries
       .filter(entry => entry.mode === 'batch' && entry.taskDir)
@@ -631,6 +696,11 @@ function persistHistory() {
   saveHistory()
 }
 
+/**
+ * 提交前的表单校验。
+ * 各模式要求的字段不同：单条需文字 + 风格，矢量化需已选图片，批量无强制要求。
+ * @returns {boolean} 校验是否通过；失败时 error 已填入提示文案
+ */
 const validateForm = () => {
   error.value = ''
 
@@ -655,18 +725,22 @@ const validateForm = () => {
   return true
 }
 
+/** 记录用户选中的待矢量化图片。 */
 const handleFileChange = (file) => {
   payload.imageFile = file || null
 }
 
 // ── 阶段进度管理（时间估算，每 100ms 刷新） ──
+// 后端不提供细粒度进度，只能用「已用时间」拟合成一条对数曲线来安抚等待感
 
+/** 停止定时器并清空两个阶段的进度状态。 */
 function resetStageProgress() {
   if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
   stageProgress.stage1.active = false; stageProgress.stage1.percent = 0
   stageProgress.stage2.active = false; stageProgress.stage2.percent = 0
 }
 
+/** 清空上一次运行的全部产物与批量状态（开始新任务前调用）。 */
 function clearOutputState() {
   result.image = ''
   result.svg = ''
@@ -686,6 +760,11 @@ function clearOutputState() {
   selectedBatchIndex.value = -1
 }
 
+/**
+ * 开始某个阶段的进度估算。
+ * 用对数曲线模拟：前期涨得快、后期趋缓，最高停在 99%，
+ * 由 finishStageProgress 在真正完成时补到 100%。
+ */
 function startStageProgress(stage) {
   const sp = stageProgress[stage]
   sp.active = true
@@ -700,6 +779,7 @@ function startStageProgress(stage) {
   }, 100)
 }
 
+/** 结束阶段进度：立即补到 100%，短暂停留后隐藏进度条。 */
 function finishStageProgress(stage) {
   if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
   const sp = stageProgress[stage]
@@ -708,6 +788,15 @@ function finishStageProgress(stage) {
   setTimeout(() => { sp.active = false }, 600)
 }
 
+/**
+ * 生成主流程（三种模式共用一个入口）。
+ *
+ * 流程骨架：
+ *   1. 校验 → 切到输出面板 → 登记「运行中」历史条目；
+ *   2. 按 mode 分派：single 走「生成 + 矢量化」两段，vectorize 只走矢量化，
+ *      batch 逐条执行并容错；
+ *   3. 每段完成后把产物写入任务目录，最后更新历史条目状态。
+ */
 const startGeneration = async () => {
   if (!validateForm()) {
     return
@@ -729,9 +818,11 @@ const startGeneration = async () => {
     mode: mode.value === 'single' ? '单条' : mode.value === 'batch' ? '批量' : '矢量化'
   }
 
+  // 先把「运行中」条目插到历史最前，用户切到历史面板即可看到进度
   logs.value.unshift(task)
   saveHistory()
 
+  // 跨阶段共享的中间结果与耗时统计
   let imageBase64 = null
   let imageName = null
   let stage1Duration = 0
@@ -764,6 +855,7 @@ const startGeneration = async () => {
 
     if (mode.value === 'single') {
       // Stage 1: 生成位图（后端 A）
+      // 超时设为 300s：文生图首次调用需加载模型，远慢于后续请求
       startStageProgress('stage1')
       const payloadA = {
         text: payload.text.trim(),
@@ -788,7 +880,9 @@ const startGeneration = async () => {
         modelDependencies: respA.model_dependencies || null,
       }
 
+      // 位图先落盘（metadata 传 null 跳过），让用户在矢量化期间就能看到中间产物
       taskInfo = await prepareOutputTask({ mode: 'single', index: 1, text: payload.text.trim(), seed: payload.seed, startedAt: taskStartedAt, usesTxt2Img: true })
+      // 记录实际引擎（comfyui / local-studio），用于识别是否降级
       const stage1Engine = respA.metadata?.engine || ''
       await writeTaskArtifacts({
         outputRoot: taskInfo.outputRoot,
@@ -806,6 +900,7 @@ const startGeneration = async () => {
       currentTaskPaths.value = taskInfo.paths
 
       // Stage 2: 矢量化（后端 B）
+      // 优先传文件路径（避免大图 base64 传输），失败时由 vectorizeWithPathFallback 回退
       startStageProgress('stage2')
       const payloadB = {
         source_type: 'generated',
@@ -857,6 +952,7 @@ const startGeneration = async () => {
 
     } else if (mode.value === 'vectorize') {
       // 直接调用后端 B
+      // 跳过 stage1：用户上传的图已经是最终位图，无需再生成
       startStageProgress('stage2')
       const payloadB = {
         source_type: 'upload',
@@ -905,6 +1001,7 @@ const startGeneration = async () => {
       batchProgress.failed = 0
       selectedBatchIndex.value = -1
 
+      // 批量任务自身也建一个目录：所有条目的子目录与汇总 CSV 都放在它下面
       const batchTaskInfo = await prepareOutputTask({ mode: 'batch-batch', index: 0, text: 'batch-run', seed: payload.seed, startedAt: taskStartedAt, usesTxt2Img: false })
       const batchSummaryDir = batchTaskInfo.taskDir
       currentTaskDir.value = batchTaskInfo.taskDir
@@ -920,7 +1017,7 @@ const startGeneration = async () => {
         const itemResolution = entry.resolution || payload.resolution
         const itemSeed = entry.seed === undefined || entry.seed === '' ? payload.seed : Number(entry.seed)
 
-        // 初始化该条目
+        // 初始化该条目：先登记为 running，成功/失败时再原地更新状态
         batchItems.value.push({
           index: i,
           text,
@@ -947,6 +1044,7 @@ const startGeneration = async () => {
             workflowApi: respA.workflow_api || null,
             modelDependencies: respA.model_dependencies || null,
           }
+          // 条目子目录放在批量根目录下；汇总 CSV 也指向批量根目录
           const itemTaskInfo = await prepareOutputTask({ mode: 'batch', index: i + 1, text: text || `item-${i + 1}`, seed: itemSeed, startedAt: taskStartedAt, usesTxt2Img: true, outputRoot: batchSummaryDir, summaryDir: batchSummaryDir })
           const batchEngine = respA.metadata?.engine || ''
           await writeTaskArtifacts({
@@ -977,7 +1075,7 @@ const startGeneration = async () => {
           const respB = vectorized.response
           const s2Ms = Date.now() - t2
 
-          // 更新条目结果
+          // 更新条目结果：把产物与路径回填到该条目，UI 可立即展示
           const item = batchItems.value[i]
           item.status = 'success'
           item.original = respA.png || ''
@@ -995,6 +1093,7 @@ const startGeneration = async () => {
             item.metadata.generation = item.metadata.generation || {}
             item.metadata.generation.duration_ms = s1Ms
           }
+          // 用完整信息重写产物（覆盖 stage1 那次只含 original 的写入），并追加汇总行
           const batchStatus = resolveStatus(respA.metadata)
           item.metadata = augmentMetadata(item.metadata, { task, taskInfo: itemTaskInfo, modeName: 'batch', text, prompt, seed: itemSeed, usesTxt2Img: true })
           await writeTaskArtifacts({
@@ -1038,7 +1137,7 @@ const startGeneration = async () => {
           currentOutputRoot.value = item.outputRoot || ''
           currentTaskPaths.value = item.paths || null
         } catch (itemErr) {
-          // 单条失败不中断整批
+          // 单条失败不中断整批：记录错误并写一份失败产物目录，然后继续下一条
           const item = batchItems.value[i]
           item.status = 'failed'
           item.error = itemErr?.message || '生成失败'
@@ -1082,12 +1181,14 @@ const startGeneration = async () => {
       task.status = '完成'
     }
 
-    // 持久化任务目录路径到 localStorage + IndexedDB（双保险）
-    // 任务目录是真正的产物源；历史恢复时直接从文件读取即可。
+    // 持久化任务目录路径到 localStorage
+    // 任务目录才是产物的真正来源；历史恢复时按目录路径重新读取文件，
+    // 因此这里只需存「目录 + 路径映射 + 输入参数」，无需存图片本体
     try {
       console.log('[save] currentTaskDir=', currentTaskDir.value, 'paths=', currentTaskPaths.value)
       let dirRecord = null
       if (mode.value === 'batch') {
+        // 缩略图取最后一条成功的条目；全部失败则不设缩略图
         const successItems = batchItems.value.filter(b => b.status === 'success')
         if (successItems.length > 0) {
           const lastItem = successItems[successItems.length - 1]
@@ -1156,9 +1257,11 @@ const startGeneration = async () => {
 
     persistHistory()
   } catch (err) {
+    // 整流程失败（批量模式内部已逐条容错，走到这里说明是更外层的错误）
     const failLabel = mode.value === 'single' ? '生成失败' : mode.value === 'vectorize' ? '矢量化失败' : '批量处理失败'
     error.value = err?.message ? `${failLabel}：${err.message}` : `${failLabel}，请稍后重试。`
     task.status = '失败'
+    // 尽力写一份失败日志，写入失败也不再向上抛（避免掩盖原始错误）
     try {
       await writeFailedTask({
         task,
@@ -1177,14 +1280,17 @@ const startGeneration = async () => {
     }
     saveHistory()
 
+    // 失败后清空输出态并退回输入面板，方便用户改参数重试
     clearOutputState()
     activeTab.value = 'input'
   } finally {
+    // 无论成败都要解除「运行中」锁定并停掉进度定时器
     running.value = false
     resetStageProgress()
   }
 }
 
+/** 把用户选择的 File 读成 data URL（供后端以 base64 方式接收）。 */
 const fileToDataUrl = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -1193,6 +1299,10 @@ const fileToDataUrl = (file) =>
     reader.readAsDataURL(file)
   })
 
+/**
+ * 按路径读取图片并转为 data URL。
+ * 读取失败（文件被删/移动）返回空串而非抛错——历史恢复场景下不应因此中断。
+ */
 const pathToDataUrl = async (filePath, mime = 'image/png') => {
   if (!filePath) return ''
   try {
@@ -1203,6 +1313,7 @@ const pathToDataUrl = async (filePath, mime = 'image/png') => {
   }
 }
 
+/** 按路径读取文本文件（SVG / 元数据 / 日志）；失败同样返回空串。 */
 const readTextPath = async (filePath) => {
   if (!filePath) return ''
   try {
@@ -1213,6 +1324,11 @@ const readTextPath = async (filePath) => {
   }
 }
 
+/**
+ * 解析 CSV 文本为对象数组（首行作表头）。
+ * 手写而非用库，是为了支持引号内的逗号与换行、以及 `""` 转义。
+ * @returns {Array<Object>} 每行一个对象，键名取自表头
+ */
 const parseCsvRows = (csvText) => {
   const rows = []
   let row = []
@@ -1255,28 +1371,36 @@ const parseCsvRows = (csvText) => {
     rows.push(row)
   }
 
+  // 丢掉全空行；首行作表头，并剥掉可能存在的 BOM
   const [rawHeader = [], ...body] = rows.filter(r => r.some(cell => String(cell || '').trim() !== ''))
   const header = rawHeader.map(key => String(key || '').replace(/^\uFEFF/, ''))
   return body.map(values => Object.fromEntries(header.map((key, index) => [key, values[index] || ''])))
 }
 
+/** 判断是否为绝对路径（Windows 盘符 / UNC / Unix 根）。 */
 const isAbsoluteOutputPath = (value) => (
   /^[a-zA-Z]:[\\/]/.test(value || '') ||
   String(value || '').startsWith('\\\\') ||
   String(value || '').startsWith('/')
 )
 
+/**
+ * 把汇总 CSV 里的路径解析为绝对路径。
+ * CSV 中记录的是相对路径（相对 CSV 所在目录），历史恢复时需要还原。
+ */
 const resolveSummaryRelativePath = (value, summaryPath) => {
   if (!value) return ''
   if (isAbsoluteOutputPath(value)) return value
   return joinPath(dirname(summaryPath), value)
 }
 
+/** 宽松转数字：非法值一律归零，避免 NaN 污染后续计算。 */
 const toNumberOrZero = (value) => {
   const number = Number(value)
   return Number.isFinite(number) ? number : 0
 }
 
+/** 解析 run.log 的 key=value 文本为对象（只取第一个等号作为分隔）。 */
 const parseKeyValueLog = (text) => {
   const map = {}
   String(text || '').split(/\r?\n/).forEach((line) => {
@@ -1286,6 +1410,10 @@ const parseKeyValueLog = (text) => {
   return map
 }
 
+/**
+ * 用汇总 CSV / run.log 里读到的指标重建一份「最小元数据」。
+ * 历史恢复时若 metadata.json 缺失，可用它兜底展示关键信息。
+ */
 const buildMetricMetadata = ({ text = '', prompt = '', seed = 0, generationMs = 0, vectorMs = 0, pngTransparency = '', svgFidelity = '' } = {}) => ({
   generation: {
     text,
@@ -1298,6 +1426,11 @@ const buildMetricMetadata = ({ text = '', prompt = '', seed = 0, generationMs = 
   quality: svgFidelity !== '' ? { svg_fidelity: svgFidelity } : {}
 })
 
+/**
+ * 由元数据判定任务状态。
+ * local-studio → stub（文生图降级为本地占位图）；
+ * fallback_tier > 0 → degraded（首选工作流失败，换了备选）。
+ */
 const resolveStatus = (metadata) => {
   if (!metadata) return 'success'
   if (metadata.engine === 'local-studio') return 'stub'
@@ -1305,6 +1438,7 @@ const resolveStatus = (metadata) => {
   return 'success'
 }
 
+/** 生成 run.log 的 key=value 文本（格式与 CLI 端保持一致，便于脚本解析）。 */
 const buildRunLog = ({ task, taskInfo, modeName, text = '', prompt = '', seed = 0, stage1Duration = 0, stage2Duration = 0, status = 'success', error = '', usesTxt2Img = false, engine = '' }) => {
   const paths = taskInfo?.paths || {}
   return [
@@ -1329,6 +1463,10 @@ const buildRunLog = ({ task, taskInfo, modeName, text = '', prompt = '', seed = 
   ].filter(Boolean).join('\n')
 }
 
+/**
+ * 用任务上下文补全元数据，产出最终写入 metadata.json 的对象。
+ * 「后端给的值优先」：generation 字段仅在缺失时才用入参兜底。
+ */
 const augmentMetadata = (metadata, { task, taskInfo, modeName, text = '', prompt = '', seed = 0, usesTxt2Img = false }) => ({
   ...(metadata || {}),
   schema_version: metadata?.schema_version || 1,
@@ -1368,6 +1506,10 @@ const augmentMetadata = (metadata, { task, taskInfo, modeName, text = '', prompt
     : null
 })
 
+/**
+ * 写入产物并把结果路径同步到组件状态与任务对象。
+ * 封装这层是为了避免每处调用都重复写一遍「回填 currentTask* 与 task.*」。
+ */
 const writeCurrentTask = async ({ task, taskInfo, artifacts, metadata, runLog, usesTxt2Img, summaryRow, workflowArtifacts }) => {
   const writeResult = await writeTaskArtifacts({
     outputRoot: taskInfo.outputRoot,
@@ -1391,11 +1533,19 @@ const writeCurrentTask = async ({ task, taskInfo, artifacts, metadata, runLog, u
   return writeResult
 }
 
+/**
+ * 调用矢量化接口，路径方式失败时自动回退到内联 base64。
+ *
+ * 优先传路径可避免大图 base64 的传输与内存开销；但路径在某些场景下不可用
+ * （后端与前端不在同一文件系统、文件被占用等），此时用内存里的图兜底。
+ * 返回 usedFallback / pathError 供调用方记录降级事实。
+ */
 const vectorizeWithPathFallback = async (payloadB, fallbackImageBase64) => {
   try {
     const response = await vectorizeArtImage(payloadB)
     return { response, usedFallback: false, pathError: '' }
   } catch (pathErr) {
+    // 没有可用的回退数据时直接抛出原始错误，不做无谓的二次请求
     if (!fallbackImageBase64) throw pathErr
 
     console.warn('[vectorize] 路径通信失败，回退到 base64：', pathErr)
@@ -1410,7 +1560,12 @@ const vectorizeWithPathFallback = async (payloadB, fallbackImageBase64) => {
   }
 }
 
+/**
+ * 写入一次「失败任务」的产物目录：只含错误元数据与日志，不含图片。
+ * 目的是让失败也在磁盘上留痕，便于事后排查与批量汇总统计。
+ */
 const writeFailedTask = async ({ task, taskInfo, modeName, text = '', prompt = '', seed = 0, errorMessage = '', usesTxt2Img = false, stage1Duration = 0, stage2Duration = 0 }) => {
+  // 没有任务目录信息（如校验阶段就失败）时无需落盘
   if (!taskInfo) return
   const metadata = augmentMetadata({ error: errorMessage }, { task, taskInfo, modeName, text, prompt, seed, usesTxt2Img })
   const summaryTarget = modeName === 'batch' ? taskInfo?.paths?.summary : null
@@ -1441,6 +1596,10 @@ const writeFailedTask = async ({ task, taskInfo, modeName, text = '', prompt = '
   })
 }
 
+/**
+ * 构造批量汇总 CSV 的一行。
+ * 实测耗时优先于元数据里的值——前端实测更贴近端到端体验。
+ */
 const buildSummaryRow = ({ task, taskInfo, modeName, status = 'success', text = '', prompt = '', seed = 0, error = '', metadata = null, generationMs = 0, vectorMs = 0 }) => {
   const metrics = {
     generation_ms: generationMs || metadata?.generation?.duration_ms || '',
@@ -1464,6 +1623,7 @@ const buildSummaryRow = ({ task, taskInfo, modeName, status = 'success', text = 
   }
 }
 
+/** 用隐藏 <a download> 触发浏览器下载；用完立即释放 object URL。 */
 const downloadFile = (filename, blob) => {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -1475,6 +1635,7 @@ const downloadFile = (filename, blob) => {
   URL.revokeObjectURL(url)
 }
 
+/** 在新标签页打开 SVG（转成 blob URL 以便浏览器按矢量图渲染）。 */
 const handleOpenSvg = (type) => {
   if (!result.svg) return
   const svgText = result.svg
@@ -1484,9 +1645,14 @@ const handleOpenSvg = (type) => {
   // 不立即 revoke，以便用户查看；浏览器在标签页关闭后释放
 }
 
+/**
+ * 走 Electron 原生保存对话框。
+ * @returns {Promise<boolean>} 是否成功保存（用户取消或异常都返回 false）
+ */
 const saveWithElectron = async (data, filename, filters) => {
   try {
     const result = await saveFile(data, filename, filters)
+    // 用户点了取消：不算失败，但也不需要回退到浏览器下载
     if (result?.canceled) {
       return false
     }
@@ -1498,6 +1664,7 @@ const saveWithElectron = async (data, filename, filters) => {
   }
 }
 
+/** 推导导出文件的名称前缀：矢量化模式用原图名，其余用艺术字文本。 */
 const getFileNameBase = () => {
   if (mode.value === 'vectorize' && payload.imageFile?.name) {
     return `${stripExtension(payload.imageFile.name)}-vectorized`
@@ -1505,13 +1672,21 @@ const getFileNameBase = () => {
   return safeName(payload.text || 'art-text')
 }
 
+/** 去掉文件名的扩展名。 */
 const stripExtension = (name) => {
   return name.replace(/\.[^.]+$/, '')
 }
 
+/**
+ * 导出指定类型的产物（original / transparent / preview / svg / json）。
+ *
+ * 双通道策略：优先走 Electron 原生保存对话框（可自选路径）；
+ * 若该通道不可用（浏览器环境或调用异常），回退到浏览器下载。
+ */
 const downloadOutput = async (type) => {
   const fileNameBase = getFileNameBase()
 
+  // 三类图片产物：结构相同，用映射表统一处理
   if (['original', 'transparent', 'preview'].includes(type)) {
     const imageMap = {
       original: {
@@ -1531,6 +1706,7 @@ const downloadOutput = async (type) => {
       }
     }
     const target = imageMap[type]
+    // 该产物不存在（如未做矢量化时没有 preview）直接返回
     if (!target.data) return
 
     const defaultName = `${fileNameBase}_${target.suffix}.png`
@@ -1541,6 +1717,7 @@ const downloadOutput = async (type) => {
       console.warn(`Electron 保存 ${target.label} 失败：`, err)
     }
 
+    // 回退：浏览器原生下载
     const a = document.createElement('a')
     a.href = target.data
     a.download = defaultName
@@ -1580,8 +1757,10 @@ const downloadOutput = async (type) => {
   }
 }
 
+/** 文件名消毒：把 Windows 禁用字符替换为 "-"，空结果回退默认名。 */
 const safeName = (name) => name.replace(/[<>:"/\\|?*]+/g, '-').trim() || 'art-text'
 
+/** 重置表单与输出状态到初始值（保留历史记录不动）。 */
 const resetForm = () => {
   payload.text = ''
   payload.prompt = ''
@@ -1612,7 +1791,13 @@ const resetForm = () => {
 
 // ── 模型下载（主窗口触发） ──
 
+/**
+ * 从主窗口触发模型下载。
+ * 进度通过 splash:progress 通道回传（主窗口与启动页共用同一通道），
+ * 订阅在 finally 中解除，避免重复触发时叠加多个监听器。
+ */
 const startModelDownload = async () => {
+  // 防重入：下载进行中直接忽略再次点击
   if (downloadingModels.value) return
   downloadingModels.value = true
   error.value = ''
@@ -1635,6 +1820,7 @@ const startModelDownload = async () => {
       if (data.eta !== undefined) modelDownloadProgress.eta = data.eta || ''
       if (data.result) modelDownloadProgress.result = data.result
 
+      // 按阶段做收尾处理：完成时补到 100%，出错时清掉速率类字段
       if (data.phase === 'downloading') {
         modelDownloadProgress.current = data.fileIndex || modelDownloadProgress.current
       } else if (data.phase === 'complete') {
@@ -1667,9 +1853,16 @@ const startModelDownload = async () => {
   }
 }
 
+/**
+ * 惰性加载某个批量条目的产物内容（按需从磁盘读取）。
+ *
+ * 批量结果可能很多条，全部预加载会占用大量内存，因此只在用户点选某条时
+ * 才读取其文件；assetsLoaded 标记保证同一条只加载一次。
+ */
 const ensureBatchItemArtifacts = async (item) => {
   if (!item || item.assetsLoaded || !item.paths) return
 
+  // 并发读取五类文件，减少串行等待
   const [original, transparent, preview, svg, metadataText] = await Promise.all([
     pathToDataUrl(item.paths.original),
     pathToDataUrl(item.paths.transparent),
@@ -1703,6 +1896,10 @@ const ensureBatchItemArtifacts = async (item) => {
   item.assetsLoaded = true
 }
 
+/**
+ * 构造批量任务的文件列表：批量根目录 + 汇总 CSV + 每条子任务目录。
+ * 用于「打开输出目录」与「保存全部结果」两处，统一在一处生成避免口径不一。
+ */
 const buildBatchCurrentFiles = (batchRoot, summaryPath, items) => {
   const files = [
     { key: 'batchRoot', name: basename(batchRoot) || 'batch-run', data: batchRoot, isPath: true },
@@ -1717,6 +1914,12 @@ const buildBatchCurrentFiles = (batchRoot, summaryPath, items) => {
   return files
 }
 
+/**
+ * 恢复一次批量任务的历史。
+ *
+ * 只恢复「元信息与路径」，图片内容留待用户点选某条时再惰性读取
+ * （assetsLoaded 初始为 false），避免历史里有几百条时一次性读爆内存。
+ */
 const restoreBatchHistory = async (item, saved) => {
   const summaryPath = saved.paths?.summary || ''
   const sourceItems = Array.isArray(saved.batchItems) ? saved.batchItems : []
@@ -1726,6 +1929,7 @@ const restoreBatchHistory = async (item, saved) => {
   for (let i = 0; i < sourceItems.length; i++) {
     const row = sourceItems[i] || {}
     const taskDir = row.taskDir || ''
+    // 路径优先取存档里记录的；缺失时按标准布局拼出来（兼容老版本记录）
     const paths = {
       original: row.paths?.original || joinPath(taskDir, 'original.png'),
       transparent: row.paths?.transparent || joinPath(taskDir, 'transparent.png'),
@@ -1737,9 +1941,11 @@ const restoreBatchHistory = async (item, saved) => {
       summaryDir: summaryPath ? dirname(summaryPath) : saved.taskDir
     }
 
+    // 耗时优先取存档值，缺失时从 run.log 里补（run.log 是每次运行都写的）
     const runLog = parseKeyValueLog(await readTextPath(paths.log))
     const generationMs = toNumberOrZero(row.generationMs || runLog.generation_ms)
     const vectorMs = toNumberOrZero(row.vectorMs || runLog.vector_ms)
+    // 有 error 字段即视为失败（兼容早期只写 error 不写 status 的记录）
     const status = row.status === 'failed' || row.error ? 'failed' : 'success'
 
     restoredItems.push({
@@ -1787,6 +1993,7 @@ const restoreBatchHistory = async (item, saved) => {
   applyInputParamsToForm(saved.inputParams, 'batch')
   activeTab.value = 'output'
 
+  // 默认选中第一条成功的条目；全失败时清空展示区
   const firstSuccess = restoredItems.findIndex(entry => entry.status === 'success')
   if (firstSuccess >= 0) {
     await selectBatchItem(firstSuccess)
@@ -1801,11 +2008,16 @@ const restoreBatchHistory = async (item, saved) => {
   }
 }
 
+/**
+ * 选中某个批量条目并在结果区展示。
+ * 失败的条目只更新目录信息、清空图形区（它本来就没有产物）。
+ */
 const selectBatchItem = async (index) => {
   const item = batchItems.value[index]
   selectedBatchIndex.value = index
   if (!item) return
 
+  // 失败条目：清空图形展示，仅保留目录以便用户去查看日志
   if (item.status !== 'success') {
     result.original = ''
     result.transparent = ''
@@ -1831,6 +2043,12 @@ const selectBatchItem = async (index) => {
   currentTaskPaths.value = item.paths || null
 }
 
+/**
+ * 批量导出当前任务的全部产物。
+ *
+ * 优先走 Electron 的目录选择保存（一次导出多个文件）；不可用时回退为
+ * 浏览器逐个下载。currentFiles 非空时按其文件列表导出（批量场景含子任务目录）。
+ */
 const saveAllResults = async () => {
   const fileBase = getFileNameBase()
 
@@ -1859,6 +2077,7 @@ const saveAllResults = async () => {
     console.warn('保存结果失败：', err)
   }
 
+  // 回退通道：浏览器逐个下载
   const fallbackImages = [
     ['original', result.original],
     ['transparent', result.transparent],
@@ -1880,12 +2099,18 @@ const saveAllResults = async () => {
   }
 }
 
+/**
+ * 打开当前任务的输出目录。
+ * 正常情况下直接打开已知的任务目录；若目录未知但内存里有产物（如从旧记录恢复），
+ * 先补写一次任务目录再打开，保证用户总能看到文件。
+ */
 const openOutputDirectory = async () => {
   if (currentTaskDir.value) {
     await openPath(currentTaskDir.value)
     return
   }
 
+  // 既无目录又无产物：无事可做，给出提示
   if (!result.original && !result.transparent && !result.preview && !result.svg && !result.metadata) {
     error.value = '当前没有可打开的输出目录。'
     return
@@ -1915,9 +2140,11 @@ const openOutputDirectory = async () => {
   }
 }
 
+/** 删除一条历史：连同其磁盘上的任务目录一起清理。 */
 const deleteHistoryItem = async (id) => {
   const item = logs.value.find(l => l.id === id)
   // 删除任务输出目录（如果存在）
+  // 优先用 historyDirs 里记录的目录（更权威），回退到条目自身的 taskDir
   const dirInfo = getHistoryDir(id)
   const targetDir = dirInfo?.taskDir || item?.taskDir || null
   if (targetDir) {
@@ -1932,8 +2159,16 @@ const deleteHistoryItem = async (id) => {
   persistHistory()
 }
 
+/**
+ * 从历史记录恢复一次任务的结果。
+ *
+ * 两条路径：任务目录可用时按路径重新读取文件（当前方案）；
+ * 目录不可用但内存里还有 base64 缓存时走兜底分支（兼容极早期记录）。
+ * 批量任务委托给 restoreBatchHistory。
+ */
 const restoreHistoryItem = async (id) => {
   const item = logs.value.find(l => l.id === id)
+  // 运行中的任务产物尚未就绪，不可恢复
   if (!item || item.status === '运行中') return
 
   const saved = getHistoryDir(id)
@@ -1996,6 +2231,10 @@ const restoreHistoryItem = async (id) => {
   error.value = '该记录的结果数据已丢失，请重新生成。'
 }
 
+/**
+ * 把历史记录里保存的输入参数回填到表单，便于用户在原参数上改一改再跑。
+ * 批量与其它模式的字段集不同（批量没有单条 text/prompt）。
+ */
 const applyInputParamsToForm = (inputParams, mode) => {
   if (!inputParams) return
   if (mode === 'batch') {
@@ -2017,6 +2256,7 @@ const applyInputParamsToForm = (inputParams, mode) => {
   }
 }
 
+/** 安全解析 JSON：失败返回 null 而非抛错（读取历史产物时容错优先）。 */
 const safeJsonParse = (text) => {
   try { return JSON.parse(text) } catch { return null }
 }

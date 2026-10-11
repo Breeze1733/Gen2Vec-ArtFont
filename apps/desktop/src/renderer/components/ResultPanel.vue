@@ -1,6 +1,12 @@
 <template>
+  <!--
+    结果面板：三种形态共用同一容器
+      1. 批量模式 → 左侧条目列表 + 右侧详情（双栏）
+      2. 单条/矢量化 → 预览网格 + 指标表
+      3. 无内容 → 空状态占位
+  -->
   <section class="result-panel">
-    <!-- 批量进度条 -->
+    <!-- 批量进度条：完成数与失败数分开展示，进度按「已处理/总数」计算 -->
     <div v-if="isBatch && (running || batchItems.length > 0)" class="batch-progress-bar">
       <div class="progress-info">
         <span class="progress-label">批量进度</span>
@@ -13,6 +19,7 @@
     </div>
 
     <!-- 单条/矢量化模式：生成进度 -->
+    <!-- 步骤条只在非矢量化模式显示「生成位图」——矢量化直接进入第二步 -->
     <div v-if="!isBatch && running" class="gen-progress">
       <div class="gen-progress-spinner"></div>
       <div class="gen-progress-info">
@@ -33,9 +40,9 @@
       </div>
     </div>
 
-    <!-- 批量模式：双栏布局 -->
+    <!-- 批量模式：双栏布局（左选条目、右看详情） -->
     <div v-if="isBatch && batchItems.length > 0" class="batch-layout">
-      <!-- 左栏：条目列表 -->
+      <!-- 左栏：条目列表；失败条目高亮，缩略图缺失时显示占位符 -->
       <div class="batch-list">
         <div class="batch-list-header">
           <span>任务列表</span>
@@ -53,7 +60,9 @@
               <span v-else class="batch-item-placeholder">—</span>
             </div>
             <div class="batch-item-info">
+              <!-- 标题回退为序号，保证空文本的条目也能辨认 -->
               <div class="batch-item-title">{{ item.text || `第 ${idx + 1} 条` }}</div>
+              <!-- 状态行：运行中 / 成功（显示总耗时）/ 失败（显示原因） -->
               <div class="batch-item-meta">
                 <span v-if="item.status === 'running'" class="status-running">生成中…</span>
                 <span v-else-if="item.status === 'success'" class="status-success">
@@ -68,13 +77,14 @@
         </div>
       </div>
 
-      <!-- 右栏：选中条目详情 -->
+      <!-- 右栏：选中条目详情（仅成功的条目有产物可展示） -->
       <div class="batch-detail" v-if="selectedBatchIndex >= 0 && batchItems[selectedBatchIndex]?.status === 'success'">
         <p class="section-kicker">Result #{{ selectedBatchIndex + 1 }}</p>
         <div class="result-header">
           <div>
             <div class="title-row">
               <h2>{{ batchItems[selectedBatchIndex].text || '生成结果' }}</h2>
+              <!-- 背景切换：透明图在白底/黑底下的观感差异很大，故提供切换 -->
               <div class="bg-toggle">
                 <button
                   :class="['bg-toggle-btn', { active: previewBg === 'white' }]"
@@ -94,6 +104,7 @@
           </div>
         </div>
 
+        <!-- 三张预览卡：原始图 / 透明图 / 矢量回渲染预览，各自按需出现 -->
         <div class="preview-grid" v-if="result.original || result.transparent || result.preview || result.image">
           <div class="preview-card" v-if="result.original">
             <div class="preview-label">原始图像</div>
@@ -109,6 +120,7 @@
           </div>
         </div>
 
+        <!-- 指标表：左表耗时，右表质量；缺失的指标整行不渲染 -->
         <div class="metrics-block" v-if="result.metadata">
           <div class="metrics-grid">
             <table class="metrics-table">
@@ -116,6 +128,7 @@
               <tbody>
                 <tr>
                   <td>生成图片耗时</td>
+                  <!-- 矢量化模式下没有生成阶段，用「用户上传图片」说明该行不适用 -->
                   <td v-if="result.metadata.generation?.duration_ms">{{ result.metadata.generation.duration_ms }} ms</td>
                   <td v-else class="muted">用户上传图片</td>
                 </tr>
@@ -128,10 +141,12 @@
             <table class="metrics-table">
               <thead><tr><th>质量指标</th><th>数值</th></tr></thead>
               <tbody>
+                <!-- PNG 透明度：预处理后透明像素占比，越高说明背景抠得越干净 -->
                 <tr v-if="result.metadata.preprocess?.png_transparency !== undefined && result.metadata.preprocess?.png_transparency !== null">
                   <td>PNG 透明度</td>
                   <td>{{ result.metadata.preprocess.png_transparency }}%</td>
                 </tr>
+                <!-- SVG 还原度：矢量化结果回渲染后与原图的相似度（SSIM 等加权） -->
                 <tr v-if="result.metadata.quality?.svg_fidelity !== undefined && result.metadata.quality?.svg_fidelity !== null">
                   <td>SVG 还原度</td>
                   <td>{{ result.metadata.quality.svg_fidelity }}%</td>
@@ -142,7 +157,7 @@
         </div>
       </div>
 
-      <!-- 右栏：失败条目 -->
+      <!-- 右栏：失败条目 —— 只展示错误原因，无产物可看 -->
       <div v-else-if="selectedBatchIndex >= 0 && batchItems[selectedBatchIndex]?.status === 'failed'" class="batch-detail batch-detail-empty">
         <div class="batch-fail-card">
           <span class="fail-icon">✕</span>
@@ -150,7 +165,7 @@
           <p class="fail-reason">{{ batchItems[selectedBatchIndex].error }}</p>
         </div>
       </div>
-      <!-- 右栏：无选中 -->
+      <!-- 右栏：尚未选中任何条目时的引导提示 -->
       <div v-else class="batch-detail batch-detail-empty">
         <p class="empty-hint">← 点击左侧条目查看结果</p>
       </div>
@@ -182,6 +197,7 @@
         </div>
       </div>
 
+      <!-- 单条/矢量化模式的预览网格：无图时显示加载动画，避免区域塌陷 -->
       <div class="preview-grid" v-if="shouldShowPreviewGrid">
         <!-- 原始图像 -->
         <div class="preview-card" v-if="result.original || stageProgress.stage1.active || (running && mode !== 'vectorize')">
@@ -218,6 +234,7 @@
         </div>
       </div>
 
+      <!-- 指标表（与批量详情同构）：耗时与质量分两表并列展示 -->
       <div class="metrics-block" v-if="result.metadata">
         <div class="metrics-grid">
           <table class="metrics-table">
@@ -251,7 +268,7 @@
       </div>
     </template>
 
-    <!-- 空状态 -->
+    <!-- 空状态：无产物且未在运行时显示，避免面板一片空白 -->
     <div v-if="!hasContent && !running" class="empty-state">
       <div class="empty-icon">📭</div>
       <p class="empty-title">无输出任务</p>
@@ -263,6 +280,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 
+// 受控组件：所有数据与运行态由父组件传入，交互通过 emit 上报
 const props = defineProps({
   result: Object,
   mode: { type: String, default: 'single' },
@@ -273,27 +291,34 @@ const props = defineProps({
   stageProgress: { type: Object, default: () => ({ stage1: { active: false, percent: 0 }, stage2: { active: false, percent: 0 } }) }
 })
 
+// 三个交互事件：打开输出目录、预览 SVG、选中批量条目
 const emit = defineEmits(['open-output-dir', 'open-svg', 'select-batch-item'])
 
+// 预览区背景色，影响透明图的可见度
 const previewBg = ref('white')  // 'white' | 'black'
 
+/** 是否处于批量模式（决定走双栏布局还是单条布局）。 */
 const isBatch = computed(() => props.mode === 'batch')
 
+/** 批量进度百分比：失败项也算「已处理」，否则进度条永远到不了 100%。 */
 const progressPercent = computed(() => {
   if (!props.batchProgress.total) return 0
   return Math.round(((props.batchProgress.completed + props.batchProgress.failed) / props.batchProgress.total) * 100)
 })
 
+/** 面板是否有内容可展示（批量看条目数，单条看产物是否存在）。 */
 const hasContent = computed(() => {
   if (isBatch.value && props.batchItems.length > 0) return true
   return props.result.original || props.result.transparent || props.result.preview || props.result.image || props.result.metadata
 })
 
+/** 单条模式下的产物判定——用于「打开输出目录」按钮的可用性。 */
 const hasResultContent = computed(() => {
   return props.result.original || props.result.transparent || props.result.preview || props.result.image || props.result.metadata
 })
 
 // 非批量模式下：有结果数据 或 正在运行时显示预览网格
+// 运行中也显示是为了让加载动画占住位置，避免布局跳动
 const shouldShowPreviewGrid = computed(() => {
   if (isBatch.value) return false
   return hasResultContent.value || props.running

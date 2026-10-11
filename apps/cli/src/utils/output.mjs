@@ -1,17 +1,30 @@
 import { transliterateChinese as pinyinTransliterate, safeTaskSlug as pinyinSlug } from './pinyin.mjs'
 /**
- * Desktop-compatible output helpers for CLI commands.
+ * CLI 输出目录工具（与桌面端产物布局保持一致）。
  *
- * The desktop app writes stable task artifacts:
- * original.png, transparent.png, result.svg, preview.png, metadata.json,
- * run.log, workflows/* and batch_summary.csv. Keeping the CLI layout aligned
- * makes large batch runs easy to inspect in either surface.
+ * 桌面端会写出固定的任务产物：original.png、transparent.png、result.svg、
+ * preview.png、metadata.json、run.log、workflows/* 以及批量汇总
+ * batch_summary.csv。CLI 沿用同一套布局，好处是：批量跑出的结果可以直接用
+ * 桌面端的历史面板查看，两端的目录结构与元数据 schema 无需再做转换。
+ *
+ * 本模块负责三件事：
+ *   1. 目录与文件名的生成（含中文转写、时间戳、重名避让）；
+ *   2. 各类产物（图片 / SVG / 元数据 / 日志 / 工作流快照）的落盘；
+ *   3. 任务索引 tasks-index.json 与批量汇总 CSV 的追加维护。
  */
 
 import fsSync from 'node:fs'
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+/**
+ * 矢量化预设表（与 vectorizer-api 的 PRESET_CONFIG 保持一致）。
+ *
+ * 6 个底层参数共同决定细节保留程度：color_precision（颜色层次）、
+ * filter_speckle（碎块过滤）、corner_threshold（硬角判定）、
+ * length_threshold（短段合并）、layer_difference（色层合并容差）、
+ * scale（追踪前上采样倍率）。越靠后的预设保留细节越多、产物越大。
+ */
 export const VECTOR_PRESETS = {
   clean: {
     preset: 'clean',
@@ -51,6 +64,11 @@ export const VECTOR_PRESETS = {
   },
 }
 
+/**
+ * 解析输出根目录，优先级：显式参数 > 环境变量 > CWD 下的 outputs/。
+ * @param {string} [outputRoot] - 显式指定的根目录
+ * @returns {string} 绝对路径
+ */
 export function resolveOutputRoot(outputRoot = '') {
   // 1. 函数参数优先级最高
   if (outputRoot) return path.resolve(outputRoot)
@@ -62,24 +80,43 @@ export function resolveOutputRoot(outputRoot = '') {
   return path.resolve('outputs')
 }
 
+/**
+ * 把批量序号格式化为 3 位零填充字符串（如 7 → "007"）。
+ * 非法或非正数一律按 1 处理，保证目录名稳定。
+ * @param {number|string} index
+ * @returns {string}
+ */
 export function padTaskIndex(index) {
   const safeIndex = Number.isFinite(Number(index)) && Number(index) > 0 ? Number(index) : 1
   return String(Math.trunc(safeIndex)).padStart(3, '0')
 }
 
+/** 中文转拼音（转发到 pinyin 模块，此处仅作为本模块的统一出口）。 */
 export function transliterateChinese(text) {
   return pinyinTransliterate(text)
 }
 
+/** 生成安全文件名 slug（转发到 pinyin 模块）。 */
 export function safeTaskSlug(text) {
   return pinyinSlug(text)
 }
 
+/**
+ * 组装任务目录名：task_<时间戳>[_<序号>]_<slug>_seed-<种子>。
+ * 批量模式在时间戳后追加 3 位序号，避免同一秒内多条任务同名。
+ * @returns {string} 目录名（不含父路径）
+ */
 export function buildTaskDirectoryName({ startedAt = null, mode = 'single', index = 1, text = 'art-text', seed = 0 } = {}) {
   const taskId = mode === 'batch' ? `${formatTaskStartedAt(startedAt)}_${padTaskIndex(index)}` : formatTaskStartedAt(startedAt)
   return `task_${taskId}_${safeTaskSlug(text)}_seed-${seed || 0}`
 }
 
+/**
+ * 把时间格式化为 YYYYMMDD_HHMMSS_mmm 的紧凑时间戳（文件名安全、可字典序排序）。
+ * 传入非法时间时回退为当前时刻，避免生成 "NaN" 目录名。
+ * @param {string|Date|null} startedAt
+ * @returns {string}
+ */
 export function formatTaskStartedAt(startedAt) {
   const date = startedAt ? new Date(startedAt) : new Date()
   const validDate = Number.isNaN(date.getTime()) ? new Date() : date
@@ -97,6 +134,20 @@ export function formatTaskStartedAt(startedAt) {
   ].join('')
 }
 
+/**
+ * 准备一个任务目录并返回其上下文信息。
+ *
+ * 同名目录已存在时追加 _2、_3… 后缀避让，保证同一秒内重复执行也不会互相覆盖。
+ * @param {Object} [options]
+ * @param {string} [options.outputRoot] - 输出根目录
+ * @param {string} [options.mode] - 任务模式（single | batch | vectorize）
+ * @param {number} [options.index] - 批量序号
+ * @param {string} [options.text] - 用于生成 slug 的文本
+ * @param {number} [options.seed] - 随机种子
+ * @param {string|null} [options.startedAt] - 开始时间
+ * @param {string|null} [options.summaryDir] - 汇总 CSV 的存放目录
+ * @returns {Promise<Object>} 任务信息（含 paths 映射）
+ */
 export async function prepareOutputTask({
   outputRoot = '',
   mode = 'single',
@@ -112,6 +163,7 @@ export async function prepareOutputTask({
   const baseName = buildTaskDirectoryName({ startedAt, mode, index, text, seed })
   let taskName = baseName
   let taskDir = path.join(root, taskName)
+  // 重名避让计数器：从 2 开始，首次重名得到 _2
   let counter = 2
 
   while (fsSync.existsSync(taskDir)) {
@@ -124,8 +176,16 @@ export async function prepareOutputTask({
   return buildTaskInfo({ outputRoot: root, taskDir, taskName, mode, index, seed, summaryDir })
 }
 
+/**
+ * 由任务目录推导出全部产物的标准路径。
+ *
+ * 集中在一处定义路径规则，保证「写产物」与「读产物」两端始终一致；
+ * 批量汇总 CSV 默认放在输出根目录（除非显式指定 summaryDir）。
+ * @returns {Object} { outputRoot, taskDir, taskName, mode, index, seed, paths }
+ */
 export function buildTaskInfo({ outputRoot, taskDir, taskName, mode, index, seed, summaryDir }) {
   const summaryRoot = summaryDir || (mode === 'batch-batch' ? taskDir : outputRoot)
+  // 全部产物路径在此集中定义，写与读共用同一份规则
   const paths = {
     original: path.join(taskDir, 'original.png'),
     transparent: path.join(taskDir, 'transparent.png'),
@@ -143,6 +203,10 @@ export function buildTaskInfo({ outputRoot, taskDir, taskName, mode, index, seed
   return { outputRoot, taskDir, taskName, mode, index, seed, paths }
 }
 
+/**
+ * 解析 data URL，返回其承载的字节。
+ * 同时支持 base64 与百分号编码两种形式；格式不匹配返回 null。
+ */
 function parseDataUrl(dataUrl) {
   const match = /^data:(.+?)(;base64)?,(.*)$/s.exec(dataUrl)
   if (!match) return null
@@ -151,6 +215,21 @@ function parseDataUrl(dataUrl) {
   return isBase64 ? Buffer.from(data, 'base64') : Buffer.from(decodeURIComponent(data), 'utf8')
 }
 
+/**
+ * 把任意形态的产物数据统一转换为 Buffer。
+ *
+ * 处理顺序：
+ *   - 空值 → null（调用方据此跳过落盘）
+ *   - Buffer / 对象 → 原样或 JSON 序列化
+ *   - 文本类产物（isText）→ 直接 UTF-8 编码
+ *   - data URL → 解析出原始字节
+ *   - 键名形如图片（original/transparent/preview/png）→ 按裸 base64 解码
+ *   - 其余 → 当作文本处理
+ * @param {*} data
+ * @param {string} [key] - 产物键名，用于推断数据形态
+ * @param {boolean} [isText] - 是否强制按文本处理
+ * @returns {Buffer|null}
+ */
 function bufferForArtifact(data, key = '', isText = false) {
   if (data === undefined || data === null || data === '') return null
   if (Buffer.isBuffer(data)) return data
@@ -162,6 +241,7 @@ function bufferForArtifact(data, key = '', isText = false) {
   const dataUrlBuffer = str.startsWith('data:') ? parseDataUrl(str) : null
   if (dataUrlBuffer) return dataUrlBuffer
 
+  // 无 data: 前缀但键名表明是图片 → 按裸 base64 解码
   const imageKeys = ['original', 'transparent', 'preview', 'png']
   const lowerKey = String(key).toLowerCase()
   if (imageKeys.some((name) => lowerKey.includes(name))) {
@@ -171,6 +251,10 @@ function bufferForArtifact(data, key = '', isText = false) {
   return Buffer.from(str, 'utf8')
 }
 
+/**
+ * 落盘单个产物文件；数据为空时跳过并返回 null。
+ * 会自动创建父目录，返回写入的路径供调用方登记。
+ */
 async function writeArtifactFile(filePath, data, key = '', isText = false) {
   const buffer = bufferForArtifact(data, key, isText)
   if (!buffer) return null
@@ -179,12 +263,19 @@ async function writeArtifactFile(filePath, data, key = '', isText = false) {
   return filePath
 }
 
+/**
+ * 转义 CSV 字段：含引号 / 逗号 / 换行时用双引号包裹，并把内部引号翻倍。
+ */
 function csvEscape(value) {
   const text = value === undefined || value === null ? '' : String(value)
   if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`
   return text
 }
 
+/**
+ * 从元数据中抽取 4 项质量指标，缺失值统一归一为空串（便于写入 CSV 与日志）。
+ * @returns {{generation_ms:*, vector_ms:*, png_transparency:*, svg_fidelity:*}}
+ */
 function extractQualityMetrics(metadata = {}) {
   const generationMs = metadata?.generation?.duration_ms
   const vectorMs = metadata?.stats?.elapsed_ms
@@ -200,6 +291,12 @@ function extractQualityMetrics(metadata = {}) {
   }
 }
 
+/**
+ * 把质量指标以 key=value 形式补进 run.log。
+ *
+ * 采用「存在则原地替换、不存在则追加」的 upsert 语义：这样两阶段写日志时
+ * （先生成、后矢量化）后写的指标能覆盖前一次的空值，而不会出现重复行。
+ */
 function appendQualityMetricsToRunLog(runLog = '', metadata = {}) {
   if (!runLog) return runLog
   const metrics = extractQualityMetrics(metadata)
@@ -219,7 +316,16 @@ function appendQualityMetricsToRunLog(runLog = '', metadata = {}) {
   ].reduce((text, [key, value]) => upsertMetric(text, key, value), runLog)
 }
 
+/**
+ * 向批量汇总 CSV 追加一行。
+ *
+ * 首次写入时先输出表头，之后只追加数据行；列顺序由 columns 固定，
+ * 保证多次运行追加到同一文件时列对齐。
+ * @param {string} summaryPath - CSV 文件路径
+ * @param {Object} [row] - 一行数据，键名与 columns 对应
+ */
 export async function appendBatchSummaryCsv(summaryPath, row = {}) {
+  // 固定的列顺序（也是表头顺序）
   const columns = [
     'task_id',
     'task_name',
@@ -244,6 +350,12 @@ export async function appendBatchSummaryCsv(summaryPath, row = {}) {
   await appendFile(summaryPath, content, 'utf8')
 }
 
+/**
+ * 构造工作流快照三件套（workflow_api.json / nodes.md / model_dependencies.json）。
+ *
+ * 调用方若已从后端拿到真实的 workflowApi / modelDependencies，则原样采用；
+ * 否则退化为基于 metadata 的「运行快照」，保证产物结构始终齐全。
+ */
 function buildWorkflowArtifacts({ metadata = {}, taskName = '', seed = 0, mode = 'single', workflowApi = null, modelDependencies = null }) {
   if (workflowApi || modelDependencies) {
     return {
@@ -288,6 +400,27 @@ function buildWorkflowArtifacts({ metadata = {}, taskName = '', seed = 0, mode =
   }
 }
 
+/**
+ * 把一次任务的全部产物写入任务目录（CLI 输出的核心出口）。
+ *
+ * 写入内容按需触发：
+ *   - 图片/SVG：artifacts 里给了才写；
+ *   - metadata.json：metadata 非 null 才写（pipeline 阶段 1 会显式传 null 跳过）；
+ *   - run.log：runLog 非空才写，并自动补上质量指标；
+ *   - workflows/*：仅 usesTxt2Img 为真时写；
+ *   - 批量汇总 CSV：给了 summaryRow 才追加。
+ *
+ * @param {Object} options
+ * @param {string} options.taskDir - 任务目录（必填）
+ * @param {Object} [options.paths] - 覆盖默认产物路径
+ * @param {Object} [options.artifacts] - 待写入的产物数据（original/transparent/svg/preview）
+ * @param {Object|null} [options.metadata] - 元数据；传 null 表示本次不写
+ * @param {string} [options.runLog] - 运行日志文本
+ * @param {boolean} [options.usesTxt2Img] - 是否涉及文生图（决定是否写工作流快照）
+ * @param {Object|null} [options.workflowArtifacts] - 后端返回的工作流与模型依赖
+ * @param {Object|null} [options.summaryRow] - 需要追加到批量汇总 CSV 的行
+ * @returns {Promise<Object>} 任务目录、路径映射与实际写入的文件列表
+ */
 export async function writeTaskArtifacts({
   outputRoot,
   taskDir,
@@ -323,6 +456,7 @@ export async function writeTaskArtifacts({
     summaryDir: paths.summaryDir || root,
   }
 
+  // 逐个写四类图形产物；缺失的键会被 writeArtifactFile 自动跳过
   const savedFiles = []
   for (const [key, filePath] of [
     ['original', targetPaths.original],
@@ -330,10 +464,12 @@ export async function writeTaskArtifacts({
     ['svg', targetPaths.svg],
     ['preview', targetPaths.preview],
   ]) {
+    // SVG 是文本，其余按二进制/base64 处理
     const saved = await writeArtifactFile(filePath, artifacts[key], key, key === 'svg')
     if (saved) savedFiles.push(saved)
   }
 
+  // metadata 显式传 null 表示「本次不写」（用于两阶段流程的中间态）
   const shouldWriteMetadata = metadata !== undefined && metadata !== null
   const metadataPayload = shouldWriteMetadata
     ? {
@@ -370,8 +506,10 @@ export async function writeTaskArtifacts({
   }
 
   if (usesTxt2Img) {
+    // 兼容 camelCase 与 snake_case 两种来源命名
     const wfApi = workflowArtifacts?.workflowApi || workflowArtifacts?.workflow_api
     const wfDeps = workflowArtifacts?.modelDependencies || workflowArtifacts?.model_dependencies
+    // 键数 > 2 才认为是「真实工作流」（而非占位快照）
     const hasRealData = wfApi && typeof wfApi === 'object' && Object.keys(wfApi).length > 2
     const fallbackWorkflow = buildWorkflowArtifacts({
       metadata: metadataPayload || {},
@@ -389,6 +527,7 @@ export async function writeTaskArtifacts({
     savedFiles.push(...[workflowApiSaved, workflowNodesSaved, modelDepsSaved].filter(Boolean))
   }
 
+  // 批量模式：把本行追加到汇总 CSV，并补齐质量指标与默认路径
   if (summaryRow) {
     const summaryTarget = summaryRow.summary_path || targetPaths.summary
     if (summaryTarget) {
@@ -405,6 +544,10 @@ export async function writeTaskArtifacts({
   return { outputRoot: root, taskDir: resolvedTaskDir, taskName: taskName || path.basename(resolvedTaskDir), paths: targetPaths, filePaths: savedFiles }
 }
 
+/**
+ * 创建一个 CLI 任务对象（进程内使用，不落盘）。
+ * id 取毫秒时间戳，与桌面端任务 id 规则一致，便于历史列表合并去重。
+ */
 export function createCliTask({ title = '', mode = 'single', startedAt = new Date().toISOString() } = {}) {
   return {
     id: Date.now(),
@@ -416,6 +559,12 @@ export function createCliTask({ title = '', mode = 'single', startedAt = new Dat
   }
 }
 
+/**
+ * 由元数据判定任务状态。
+ *   - local-studio 引擎 → 'stub'（文生图已降级为本地占位图）
+ *   - fallback_tier > 0 → 'degraded'（首选的 ComfyUI 工作流失败，换了备选）
+ *   - 其余 → 'success'
+ */
 export function resolveStatus(metadata) {
   if (!metadata) return 'success'
   if (metadata.engine === 'local-studio') return 'stub'
@@ -423,6 +572,13 @@ export function resolveStatus(metadata) {
   return 'success'
 }
 
+/**
+ * 生成 run.log 的 key=value 文本内容。
+ *
+ * 采用 key=value 而非自由文本，便于用 grep / 脚本直接解析；空 error 行会被
+ * 过滤掉，避免日志里出现无意义的 `error=`。
+ * @returns {string} 多行文本
+ */
 export function buildRunLog({
   task,
   taskInfo,
@@ -465,6 +621,13 @@ export function buildRunLog({
   ].filter(Boolean).join('\n')
 }
 
+/**
+ * 用任务上下文补全元数据，产出最终写入 metadata.json 的对象。
+ *
+ * 原则是「后端给的值优先」：generation 块里的 text/prompt/seed 只有缺失时才用
+ * 命令行入参兜底；paths / workflow_paths 则统一改写为相对任务目录的路径，
+ * 便于整个任务目录被整体搬移后仍然自洽。
+ */
 export function augmentMetadata(metadata, { task, taskInfo, modeName, text = '', prompt = '', seed = 0, usesTxt2Img = false } = {}) {
   return {
     ...(metadata || {}),
@@ -576,6 +739,13 @@ export async function appendTaskIndex(outputRoot, entry) {
   await writeFile(indexPath, JSON.stringify(trimmed, null, 2), 'utf8')
 }
 
+/**
+ * 构造批量汇总 CSV 的一行。
+ *
+ * 显式传入的 generationMs / vectorMs 会覆盖元数据里的对应值——批量场景下
+ * 这两个耗时由命令层实测，比后端自报更贴近端到端体验。
+ * @returns {Object} 键名与 appendBatchSummaryCsv 的 columns 对应
+ */
 export function buildSummaryRow({
   task,
   taskInfo,
@@ -590,6 +760,7 @@ export function buildSummaryRow({
   generationMs = null,
   vectorMs = null,
 } = {}) {
+  // 把实测耗时合并进元数据的对应字段后再统一抽取，保证取值逻辑只有一处
   const metrics = extractQualityMetrics({
     ...(metadata || {}),
     generation: {

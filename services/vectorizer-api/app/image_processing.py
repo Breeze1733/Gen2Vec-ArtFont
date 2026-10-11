@@ -84,6 +84,11 @@ _REMBG_MODEL_CHECKED = False
 
 
 def decode_base64_image(data: str) -> bytes:
+    """将 base64 字符串（可带 ``data:`` 前缀）解码为原始字节。
+
+    兼容前端 ``<img src="data:image/png;base64,...">`` 直接透传的写法：
+    存在前缀时按第一个逗号切分取出有效载荷，否则整体视为 base64 内容。
+    """
     data = data.strip()
     if data.startswith("data:"):
         _, payload = data.split(",", 1)
@@ -93,6 +98,14 @@ def decode_base64_image(data: str) -> bytes:
 
 
 def image_bytes_to_pil(image_bytes: bytes) -> Image.Image:
+    """把图片字节解码为 PIL 图像。
+
+    在此统一兜底解码异常并转换为 ``ValueError``，便于路由层映射为 400 响应；
+    ``load()`` 立即读入全部像素，避免文件句柄延迟释放引发的资源问题。
+
+    Raises:
+        ValueError: 字节流不是可识别的 PNG/JPG 等图片格式。
+    """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img.load()
@@ -102,6 +115,10 @@ def image_bytes_to_pil(image_bytes: bytes) -> Image.Image:
 
 
 def pil_to_data_url(img: Image.Image, fmt: str = "PNG") -> str:
+    """把 PIL 图像编码为 ``data:<mime>;base64,...`` 形式的 Data URL。
+
+    目前仅区分 PNG 与 JPEG 两种 MIME 类型，其余格式按 JPEG 处理。
+    """
     buf = io.BytesIO()
     img.save(buf, format=fmt)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -110,12 +127,18 @@ def pil_to_data_url(img: Image.Image, fmt: str = "PNG") -> str:
 
 
 def pil_to_rgb_np(img: Image.Image) -> np.ndarray:
+    """把 PIL 图像转为 ``H×W×3`` 的 RGB ``ndarray``（必要时执行模式转换）。"""
     if img.mode != "RGB":
         img = img.convert("RGB")
     return np.array(img)
 
 
 def _safe_int(value: Any, default: int) -> int:
+    """尽力将 ``value`` 转为 ``int``，失败时返回 ``default``。
+
+    用于消化来自 JSON 的松散参数（可能为字符串、``None`` 或浮点），
+    避免因单个非法字段导致整个请求失败。
+    """
     try:
         return int(value)
     except Exception:
@@ -123,16 +146,26 @@ def _safe_int(value: Any, default: int) -> int:
 
 
 def _rembg_model_dir() -> Path:
+    """返回 rembg 离线模型所在目录。
+
+    PyInstaller 打包后（``sys.frozen`` 为真）模型位于 EXE 同级的 ``models/rembg``；
+    源码运行时则位于 ``services/vectorizer-api/models/rembg``。
+    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent / "models" / "rembg"
     return Path(__file__).resolve().parents[1] / "models" / "rembg"
 
 
 def _rembg_model_path() -> Path:
+    """返回 rembg 离线模型文件的完整路径。"""
     return _rembg_model_dir() / REMBG_MODEL_FILENAME
 
 
 def _file_md5(path: Path) -> str:
+    """分块计算文件 MD5，返回十六进制摘要。
+
+    采用 1 MiB 分块读取，避免将数百 MB 的 ONNX 模型整体载入内存。
+    """
     digest = hashlib.md5()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -141,6 +174,15 @@ def _file_md5(path: Path) -> str:
 
 
 def _ensure_local_rembg_model() -> Path:
+    """定位并校验本地 rembg 模型，返回其路径。
+
+    强制使用随包分发的离线模型（不联网下载），并在首次调用时校验 MD5，
+    确保模型文件未被截断或替换。校验结果通过 ``_REMBG_MODEL_CHECKED`` 缓存，
+    避免每次请求都重算大文件摘要。
+
+    Raises:
+        RuntimeError: 模型文件缺失，或校验和与预期不符。
+    """
     global _REMBG_MODEL_CHECKED
 
     model_path = _rembg_model_path()
@@ -161,6 +203,15 @@ def _ensure_local_rembg_model() -> Path:
 
 
 def _load_rembg():
+    """惰性导入 rembg 及其依赖的 onnxruntime，返回 ``(remove, new_session)``。
+
+    延迟到首次使用才导入，可显著缩短服务冷启动时间；导入结果缓存于模块级变量，
+    后续调用直接复用。导入失败时抛出携带原始异常信息的 ``RuntimeError``，便于
+    定位缺失的依赖。
+
+    Raises:
+        RuntimeError: onnxruntime 或 rembg 未能成功导入。
+    """
     global _REMBG_REMOVE, _REMBG_NEW_SESSION
 
     if _REMBG_REMOVE is not None and _REMBG_NEW_SESSION is not None:
@@ -188,6 +239,14 @@ def _load_rembg():
 
 
 def _get_rembg_session():
+    """获取（并缓存）rembg 推理会话。
+
+    首次调用时先把 ``U2NET_HOME`` 指向本地模型目录，使 rembg 从离线文件加载
+    ``isnet-general-use`` 模型，杜绝运行期联网下载；随后创建并缓存会话实例。
+
+    Raises:
+        RuntimeError: 会话初始化失败（通常为缺少 CPU/GPU 运行时支持）。
+    """
     global _REMBG_SESSION
 
     if _REMBG_SESSION is None:
@@ -205,6 +264,15 @@ def _get_rembg_session():
 
 
 def remove_background_with_rembg(img: Image.Image) -> Image.Image:
+    """使用 rembg 抠除背景，返回带 Alpha 通道的 RGBA 图像。
+
+    优先启用 ``alpha_matting``（贝叶斯抠图）与掩模后处理以获得平滑的边缘过渡；
+    若该组合不被当前 rembg 版本支持，则回退到仅 ``post_process_mask`` 的简化调用。
+    同时兼容 rembg 返回 PIL 图像或字节流两种实现。
+
+    Raises:
+        RuntimeError: rembg 调用失败且回退仍失败，或返回类型不受支持。
+    """
     source = img.convert("RGBA")
     session = _get_rembg_session()
     remove, _ = _load_rembg()
@@ -238,6 +306,19 @@ def remove_edge_connected_white(
     white_value_threshold: int = 245,
     white_saturation_threshold: int = 20,
 ) -> Image.Image:
+    """将「与画布边缘连通的纯白区域」置为全透明。
+
+    先在 HSV 空间提取近纯白掩模，再做 8-邻域连通域标记，只清除与图像四边相连的
+    白色分量——这样既能移除背景底衬白边，又能保留被前景包围的白色笔画内部区域。
+
+    Args:
+        img: 输入图像（内部转为 RGBA 处理）。
+        white_value_threshold: 判定纯白的 V 通道下限。
+        white_saturation_threshold: 判定纯白的 S 通道上限。
+
+    Returns:
+        处理后的 RGBA 图像；若不存在白色区域，或白色不与边缘连通，则原样返回。
+    """
     rgba = img.convert("RGBA")
     arr = np.array(rgba)
     rgb = arr[:, :, :3]
@@ -271,6 +352,11 @@ def remove_edge_connected_white(
 
 
 def denoise_preserve_edges(img: Image.Image) -> Image.Image:
+    """对 RGB 通道做双边滤波去噪，同时保持笔画边缘锐利。
+
+    双边滤波在「空间距离」与「色彩差」的双重高斯核约束下平滑表面噪点，
+    避免普通高斯模糊造成的边缘退化；Alpha 通道保持原样拼接回去。
+    """
     rgba = img.convert("RGBA")
     arr = np.array(rgba)
     rgb = arr[:, :, :3]
@@ -282,6 +368,11 @@ def denoise_preserve_edges(img: Image.Image) -> Image.Image:
 
 
 def crop_to_subject(img: Image.Image, alpha_threshold: int = 8, padding: int = 8) -> Image.Image:
+    """按前景 Alpha 包围盒裁剪图像，并保留 ``padding`` 像素边距。
+
+    收敛视口可去除多余留白，提升后续轮廓拟合效率。若图像全透明（无前景像素）
+    则原样返回，避免裁剪出空图。
+    """
     rgba = img.convert("RGBA")
     arr = np.array(rgba)
     alpha = arr[:, :, 3]
@@ -297,6 +388,11 @@ def crop_to_subject(img: Image.Image, alpha_threshold: int = 8, padding: int = 8
 
 
 def preserve_antialias_edges(img: Image.Image) -> Image.Image:
+    """软化 Alpha 边缘以保留抗锯齿过渡。
+
+    对 Alpha 通道施加小幅高斯模糊，再与原 Alpha 逐像素取最大值：既补充了半透明
+    过渡像素（软化锯齿），又不会削减原有的不透明度。
+    """
     rgba = img.convert("RGBA")
     arr = np.array(rgba)
     alpha = arr[:, :, 3]
@@ -363,6 +459,10 @@ def quantize_colors(img: Image.Image, color_count: int) -> Image.Image:
 
 
 def calculate_png_transparency(img: Image.Image) -> float:
+    """计算透明像素占比（百分比，保留一位小数）。
+
+    以 Alpha 通道均值换算整体透明度，写入元数据用于标记预处理结果的透明程度。
+    """
     rgba = img.convert("RGBA")
     alpha = np.array(rgba.getchannel("A"), dtype=np.uint8)
     if alpha.size == 0:
@@ -371,6 +471,22 @@ def calculate_png_transparency(img: Image.Image) -> float:
 
 
 def preprocess_image(image_bytes: bytes, vector: dict[str, Any]) -> dict[str, Any]:
+    """图像预处理主流程：解码 → 抠图 / 去噪 / 裁剪 → 色彩量化。
+
+    关键分支：若原图已自带有效 Alpha 通道（RGBA/LA/PA 模式，或调色板图带
+    transparency 信息），则视为「已抠好的图」，跳过 rembg 与重型预处理，直接进入
+    色彩量化；否则按需调用 rembg 抠图，再做保边去噪、抗锯齿软化与前景裁剪。
+    无论走哪条分支，最后都会执行 CIELAB K-Means 色彩量化并统计透明像素占比。
+
+    Args:
+        image_bytes: 原始图片字节。
+        vector: 矢量化参数字典（含 ``preset`` / ``color_precision`` /
+            ``remove_edge_white_background`` 等键）。
+
+    Returns:
+        含 ``transparent_image``（PIL 图）、``transparent_png``（Data URL）、
+        ``size``（宽高字典）与 ``png_transparency``（透明占比）的字典。
+    """
     img = image_bytes_to_pil(image_bytes)
 
     # 检测是否已有 alpha 通道（RGBA、LA、PA 模式，或调色板模式带透明度信息）
