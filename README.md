@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="apps/desktop/assets/icon.png" alt="Gen2Vec-ArtFont" width="96" height="96" />
+<img src="apps/desktop/assets/icon.png" alt="Gen2Vec-ArtFont" width="160" height="160" />
 
 # Gen2Vec ArtFont
 
