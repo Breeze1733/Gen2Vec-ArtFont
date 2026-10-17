@@ -72,8 +72,9 @@ param(
   [switch]$StrictSvgGroups
 )
 
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
+# 不要改 [Console]::OutputEncoding。老 conhost 在 UTF-8(65001) 代码页下对中文
+# 宽字符的宽度记账有 bug，会把每个汉字显示成两遍；保持系统默认代码页（中文 Windows
+# 通常是 936）显示才正常。报告文件用显式 UTF-8 读写，与控制台编码无关。
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

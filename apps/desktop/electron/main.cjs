@@ -1700,9 +1700,12 @@ ipcMain.handle('art-text/launch-acceptance-test', async () => {
   const scriptPath = resolveAcceptanceScriptPath()
   const outputRoot = getOutputRoot()
   await fs.mkdir(outputRoot, { recursive: true })
+  // 传相对文件名而不是 scriptPath 绝对路径：
+  // cmd 的 /c 在命令行以引号开头且后面还有引号时，会剥掉「第一个引号 + 最后一个引号」，
+  const scriptName = path.basename(scriptPath)
   const child = spawn(
     'cmd.exe',
-    ['/d', '/c', 'start', '', scriptPath, '-OutputRoot', outputRoot],
+    ['/d', '/c', 'start', '', scriptName, '-OutputRoot', outputRoot],
     {
       cwd: path.dirname(scriptPath),
       // detached：脱离父进程进程组，父进程退出不影响测试窗口
