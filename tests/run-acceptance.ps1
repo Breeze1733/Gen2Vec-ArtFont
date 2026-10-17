@@ -534,6 +534,73 @@ function Test-SvgStructure {
 # 结果收集
 # ══════════════════════════════════════════════════════════════════════
 
+function Test-DetailedOutput {
+  <# -Verbose 时才输出技术细节；默认只给面向用户的信息。 #>
+  return ($VerbosePreference -ne 'SilentlyContinue')
+}
+
+function Format-Duration {
+  <# 秒数转成人能读的时长：42 秒 / 1 分 35 秒 / 1 小时 12 分。 #>
+  param([double]$Seconds)
+
+  $total = [int][Math]::Round($Seconds)
+  if ($total -lt 60) { return "$total 秒" }
+
+  $minutes = [int][Math]::Floor($total / 60)
+  $rest = $total % 60
+  if ($minutes -lt 60) {
+    if ($rest -eq 0) { return "$minutes 分" }
+    return "$minutes 分 $rest 秒"
+  }
+
+  $hours = [int][Math]::Floor($minutes / 60)
+  $minutes = $minutes % 60
+  if ($minutes -eq 0) { return "$hours 小时" }
+  return "$hours 小时 $minutes 分"
+}
+
+function Format-ServiceName {
+  <# 内部服务名转成用户能理解的名字。 #>
+  param([string]$Name)
+
+  switch -Regex ($Name) {
+    'txt2img' { return '图像生成服务' }
+    'vectorizer' { return '矢量化服务' }
+    'ComfyUI' { return '绘图引擎' }
+    default { return $Name }
+  }
+}
+
+function Write-Stage {
+  param([string]$Text)
+  Write-Host ''
+  Write-Host $Text -ForegroundColor Cyan
+}
+
+function Write-Note {
+  <# 缩进的进度提示，例如「正在生成图片…（已等待 15 秒）」。 #>
+  param([string]$Text)
+  Write-Host "      $Text" -ForegroundColor DarkGray
+}
+
+function Write-Outcome {
+  <# 面向用户的结论行：通过 / 失败 / 警告 / 跳过。 #>
+  param(
+    [ValidateSet('通过', '失败', '警告', '跳过')][string]$Status,
+    [string]$Text,
+    [string]$Detail = ''
+  )
+
+  $color = switch ($Status) {
+    '通过' { 'Green' }
+    '警告' { 'Yellow' }
+    '跳过' { 'DarkGray' }
+    default { 'Red' }
+  }
+  $suffix = if ([string]::IsNullOrWhiteSpace($Detail)) { '' } else { "  ($Detail)" }
+  Write-Host "  [$Status] $Text$suffix" -ForegroundColor $color
+}
+
 function New-ScenarioResult {
   param([string]$Name)
   return [PSCustomObject]@{
@@ -543,20 +610,26 @@ function New-ScenarioResult {
     Artifacts = (New-Object System.Collections.ArrayList)
     Elapsed   = 0.0
     Error     = ''
+    # 供历史索引使用的结构化信息（产物路径、输入、耗时），由场景函数填充
+    Data      = @{}
   }
 }
 
 function Add-Check {
   <#
-    记录一条断言。$Ok 为假即把场景判为 FAIL 并立刻打印，
-    让用户在新开的控制台窗口里实时看到是哪一条挂了。
+    记录一条断言。
+
+    默认只在出问题时打印（FAIL / WARN），避免几十行绿色 PASS 淹没进度；
+    -Verbose 时逐条打印，保留完整技术细节。报告文件始终记录全部检查项。
   #>
   param(
     [Parameter(Mandatory = $true)]$Result,
     [Parameter(Mandatory = $true)][bool]$Ok,
     [Parameter(Mandatory = $true)][string]$Label,
     [string]$Detail = '',
-    [switch]$WarnOnly
+    [switch]$WarnOnly,
+    # 面向用户的说法；默认输出失败时用它替代 Label + Detail（技术原因仍进报告）
+    [string]$DisplayText = ''
   )
 
   $status = if ($Ok) { 'PASS' } elseif ($WarnOnly) { 'WARN' } else { 'FAIL' }
@@ -565,9 +638,16 @@ function Add-Check {
 
   [void]$Result.Checks.Add([PSCustomObject]@{ Label = $Label; Status = $status; Detail = $Detail })
 
-  $suffix = if ([string]::IsNullOrWhiteSpace($Detail)) { '' } else { "  ($Detail)" }
-  $color = switch ($status) { 'PASS' { 'Green' } 'WARN' { 'Yellow' } default { 'Red' } }
-  Write-Host "  [$status] $Label$suffix" -ForegroundColor $color
+  if ($status -ne 'PASS' -or (Test-DetailedOutput)) {
+    $statusText = switch ($status) { 'PASS' { '通过' } 'WARN' { '警告' } default { '失败' } }
+    $color = switch ($status) { 'PASS' { 'Green' } 'WARN' { 'Yellow' } default { 'Red' } }
+    if (-not (Test-DetailedOutput) -and -not [string]::IsNullOrWhiteSpace($DisplayText)) {
+      Write-Host "  [$statusText] $DisplayText" -ForegroundColor $color
+    } else {
+      $suffix = if ([string]::IsNullOrWhiteSpace($Detail)) { '' } else { "  ($Detail)" }
+      Write-Host "  [$statusText] $Label$suffix" -ForegroundColor $color
+    }
+  }
 
   return $Ok
 }
@@ -628,7 +708,7 @@ function Invoke-JsonPost {
       Start-Sleep -Milliseconds 500
       $elapsed = $watch.Elapsed.TotalSeconds
       if ($elapsed -ge $nextReport) {
-        Write-Host ("      ... {0} 已等待 {1:N0}s" -f $Label, $elapsed) -ForegroundColor DarkGray
+        Write-Note ("{0}…（已等待 {1} 秒）" -f $Label, [int]$elapsed)
         $nextReport += 15
       }
     }
@@ -659,6 +739,8 @@ function Test-HttpReady {
   <# 探测 GET 是否返回 200；用于后端 /healthz 与 ComfyUI /system_stats。 #>
   param([Parameter(Mandatory = $true)][string]$Url, [int]$TimeoutSec = 3)
 
+  # 脚本自己的 -Verbose 不应把 Invoke-WebRequest 的内部日志一并带出来
+  $VerbosePreference = 'SilentlyContinue'
   try {
     $resp = Invoke-WebRequest -Uri $Url -Method GET -TimeoutSec $TimeoutSec -UseBasicParsing
     return ([int]$resp.StatusCode -eq 200)
@@ -672,26 +754,32 @@ function Test-HttpReady {
 # ══════════════════════════════════════════════════════════════════════
 
 function Wait-BackendReady {
-  <# 等后端 /healthz 就绪。桌面端启动时会自动拉起后端，按钮路径通常秒过。 #>
+  <#
+    等后端 /healthz 就绪。桌面端启动时会自动拉起后端，按钮路径通常秒过。
+
+    只在「正在等待」时输出进度；成功与否由调用方统一打印面向用户的结论。
+  #>
   param([string]$Base, [string]$Name, [int]$Seconds)
 
+  $display = Format-ServiceName $Name
   $startedAt = Get-Date
   $deadline = $startedAt.AddSeconds($Seconds)
   $lastReport = -1
+
   do {
     if (Test-HttpReady -Url "$Base/healthz" -TimeoutSec 3) {
-      Write-Host "[环境] $Name 就绪（$Base）" -ForegroundColor Green
+      Write-Verbose "[env] $Name ready at $Base"
       return $true
     }
     $waited = [int]((Get-Date) - $startedAt).TotalSeconds
     if ([int]($waited / 5) -ne $lastReport) {
-      Write-Host "[环境] 等待 $Name 就绪 ... ${waited}s" -ForegroundColor DarkGray
+      Write-Note "正在等待${display}启动…（已等待 ${waited} 秒）"
       $lastReport = [int]($waited / 5)
     }
     Start-Sleep -Seconds 1
   } while ((Get-Date) -lt $deadline)
 
-  Write-Host "[环境] $Name 在 ${Seconds}s 内未就绪（$Base/healthz）" -ForegroundColor Red
+  Write-Verbose "[env] $Name not ready within ${Seconds}s at $Base/healthz"
   return $false
 }
 
@@ -703,29 +791,28 @@ function Test-ComfyUiGate {
   param($Result, [string]$Host_, [int]$TimeoutSec)
 
   if (Test-HttpReady -Url "$Host_/system_stats" -TimeoutSec 5) {
-    Write-Host "  [gate] ComfyUI 就绪 $Host_" -ForegroundColor Green
+    Write-Verbose "[gate] ComfyUI ready at $Host_"
     return $true
   }
 
-  Write-Host "  [gate] ComfyUI 未就绪，等待中（最多 ${TimeoutSec}s，冷启动可能 1-3 分钟）..." -ForegroundColor Yellow
+  Write-Note '绘图引擎正在启动…（冷启动可能需要 1-3 分钟）'
   $startedAt = Get-Date
   $deadline = $startedAt.AddSeconds($TimeoutSec)
   $lastReport = -1
   while ((Get-Date) -lt $deadline) {
     if (Test-HttpReady -Url "$Host_/system_stats" -TimeoutSec 5) {
-      Write-Host "  [gate] ComfyUI 就绪" -ForegroundColor Green
+      Write-Verbose "[gate] ComfyUI ready"
       return $true
     }
     $waited = [int]((Get-Date) - $startedAt).TotalSeconds
     if ([int]($waited / 10) -ne $lastReport) {
-      Write-Host "      ... 等待 ComfyUI 就绪 ${waited}s" -ForegroundColor DarkGray
+      Write-Note "正在等待绘图引擎…（已等待 ${waited} 秒）"
       $lastReport = [int]($waited / 10)
     }
     Start-Sleep -Seconds 2
   }
 
-  Add-Check $Result $false 'ComfyUI 门禁' `
-    'ComfyUI 未就绪，拒绝在 stub 模式下跑生成场景（否则后端会静默回落 local-studio，验收将假通过）'
+  Add-Check $Result $false '绘图引擎未就绪' '请打开桌面端（会自动启动绘图引擎）后重试'
   return $false
 }
 
@@ -755,12 +842,14 @@ function Invoke-SingleScenario {
     workflow        = ''
   }
 
-  Write-Host "  -> POST $($Ctx.Txt2ImgBase)/api/v1/txt2img  text=$script:SingleText"
+  Write-Note '正在生成图片…'
+  Write-Verbose "  -> POST $($Ctx.Txt2ImgBase)/api/v1/txt2img  text=$script:SingleText"
   $resp = Invoke-JsonPost -Url "$($Ctx.Txt2ImgBase)/api/v1/txt2img" -Body $body `
-    -TimeoutSec $Ctx.GenTimeoutSec -Label '生成中'
+    -TimeoutSec $Ctx.GenTimeoutSec -Label '正在生成图片'
+  $generationMs = [int]($resp.ElapsedSec * 1000)
 
   if (-not (Add-Check $result ($resp.Status -eq 200) "生图返回 200（text=$script:SingleText）" `
-        "HTTP $($resp.Status) $(Get-Snippet $resp.Text)")) {
+        "HTTP $($resp.Status) $(Get-Snippet $resp.Text)" -DisplayText '图片生成失败')) {
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }
@@ -776,29 +865,31 @@ function Invoke-SingleScenario {
   } else {
     $reasons -join '；'
   }
-  if (-not (Add-Check $result ($reasons.Count -eq 0) '真走 ComfyUI（非 stub）' $evidence)) {
+  if (-not (Add-Check $result ($reasons.Count -eq 0) '真走 ComfyUI（非 stub）' $evidence -DisplayText '没有真正生成图片（服务回退了）')) {
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }
 
   Add-Check $result ((Get-DeepValue $meta 'workflow_used') -eq 'qwen_image_2512_gguf') `
-    '路由命中 qwen（念奴娇是纯中文）' "workflow_used=$(Get-DeepValue $meta 'workflow_used')"
+    '路由命中 qwen（念奴娇是纯中文）' "workflow_used=$(Get-DeepValue $meta 'workflow_used')" `
+    -DisplayText '生成引擎选择异常'
 
   $syn = Get-DeepValue $meta 'prompt_synthesis'
   Add-Check $result ((Get-DeepValue $syn 'text_profile') -eq 'chinese') `
-    '文本分类为 chinese' "text_profile=$(Get-DeepValue $syn 'text_profile')"
+    '文本分类为 chinese' "text_profile=$(Get-DeepValue $syn 'text_profile')" `
+    -DisplayText '文本分类异常'
 
   # 请求 1024x1024，Qwen 会按宽高比吸附到官方尺寸
   $latent = Get-LatentSize -WorkflowApi (Get-DeepValue $payload 'workflow_api')
   $latentText = if ($null -eq $latent) { '<未找到 latent 节点>' } else { "$($latent[0])x$($latent[1])" }
   Add-Check $result ($null -ne $latent -and $latent[0] -eq 1328 -and $latent[1] -eq 1328) `
-    'qwen 分辨率映射 1024x1024 -> 1328x1328' $latentText
+    'qwen 分辨率映射 1024x1024 -> 1328x1328' $latentText -DisplayText '生成尺寸与预期不符'
 
   # ── 产物落盘 ──
   $pngPath = Join-Path $outDir 'original.png'
   $imageBase64 = [string](Get-DeepValue $payload 'image_base64')
   if ([string]::IsNullOrWhiteSpace($imageBase64)) {
-    Add-Check $result $false '响应含 image_base64'
+    Add-Check $result $false '响应含 image_base64' '' -DisplayText '服务没有返回图片'
   } else {
     New-Item -ItemType Directory -Path $outDir -Force | Out-Null
     try {
@@ -807,19 +898,65 @@ function Invoke-SingleScenario {
       $pngSize = Get-DataUrlPngSize -DataUrl $imageBase64
       $sizeText = "$($pngSize[0])x$($pngSize[1])"
       $matchLatent = ($null -ne $latent -and $pngSize[0] -eq $latent[0] -and $pngSize[1] -eq $latent[1])
-      Add-Check $result $matchLatent 'original.png 像素尺寸 == latent 尺寸' "$sizeText vs $latentText"
+      Add-Check $result $matchLatent 'original.png 像素尺寸 == latent 尺寸' "$sizeText vs $latentText" `
+        -DisplayText '图片尺寸与预期不符'
       [void]$result.Artifacts.Add($pngPath)
     } catch {
-      Add-Check $result $false 'original.png 落盘失败' $_.Exception.Message
+      Add-Check $result $false 'original.png 落盘失败' $_.Exception.Message -DisplayText '图片保存失败'
     }
   }
 
+  $vectorMs = 0
+  $svgFidelity = $null
+  $pngTransparency = $null
   if (Test-Path -LiteralPath $pngPath) {
     $vec = Invoke-Vectorize -Ctx $Ctx -PngPath $pngPath -ImageName 'single-niannujiao.png' -OutDir $outDir -Tag '单图'
     foreach ($check in $vec.Checks) {
-      Add-Check $result ($check.Status -eq 'PASS') $check.Label $check.Detail -WarnOnly:($check.Status -eq 'WARN')
+      Add-Check $result ($check.Status -eq 'PASS') $check.Label $check.Detail -WarnOnly:($check.Status -eq 'WARN') -DisplayText $check.Display
     }
     foreach ($artifact in $vec.Artifacts) { [void]$result.Artifacts.Add($artifact) }
+    $vectorMs = [int]($vec.ElapsedSec * 1000)
+    $svgFidelity = $vec.SvgFidelity
+    $pngTransparency = $vec.PngTransparency
+  }
+
+  # ── 写 metadata.json / run.log，并准备历史索引数据 ──
+  # 历史面板恢复记录时按 paths 重新读盘，所以这里必须落齐四件套 + metadata。
+  if (Test-Path -LiteralPath $pngPath) {
+    $itemStatus = if ($result.Status -eq 'FAIL') { 'failed' } else { 'success' }
+    Write-TaskMetadataFile -OutDir $outDir -GenerationMeta $meta `
+      -Generation @{
+        text        = $script:SingleText
+        prompt      = $script:SingleStyle
+        seed        = 0
+        resolution  = '1024 x 1024'
+        duration_ms = $generationMs
+      } `
+      -VectorMs $vectorMs -SvgFidelity $svgFidelity -PngTransparency $pngTransparency -Status $itemStatus
+
+    $result.Data = @{
+      Kind            = 'single'
+      TaskDir         = $outDir
+      Title           = "验收 · 单图（$($script:SingleText)）"
+      Text            = $script:SingleText
+      Prompt          = $script:SingleStyle
+      Negative        = ''
+      Seed            = 0
+      Resolution      = '1024 x 1024'
+      GenerationMs    = $generationMs
+      VectorMs        = $vectorMs
+      SvgFidelity     = $svgFidelity
+      PngTransparency = $pngTransparency
+      Status          = $itemStatus
+      Paths           = @{
+        original    = Join-Path $outDir 'original.png'
+        transparent = Join-Path $outDir 'transparent.png'
+        preview     = Join-Path $outDir 'preview.png'
+        svg         = Join-Path $outDir 'result.svg'
+        metadata    = Join-Path $outDir 'metadata.json'
+        log         = Join-Path $outDir 'run.log'
+      }
+    }
   }
 
   $result.Elapsed = $watch.Elapsed.TotalSeconds
@@ -830,6 +967,45 @@ function Invoke-SingleScenario {
 # 矢量化（单图与批量共用）
 # ══════════════════════════════════════════════════════════════════════
 
+function Write-TaskMetadataFile {
+  <#
+    写任务目录的 metadata.json 与 run.log。
+
+    桌面端「历史任务」恢复一条记录时会读这两个文件：metadata 提供输入、
+    耗时与质量分，run.log 提供分阶段耗时。字段形状对齐正常任务写出的结构，
+    这样验收产物在历史面板里和普通结果表现一致。
+  #>
+  param(
+    [string]$OutDir,
+    [hashtable]$GenerationMeta,
+    [hashtable]$Generation,
+    [int]$VectorMs,
+    $SvgFidelity,
+    $PngTransparency,
+    [string]$Status = 'success'
+  )
+
+  $doc = @{}
+  if ($GenerationMeta) {
+    foreach ($key in $GenerationMeta.Keys) { $doc[$key] = $GenerationMeta[$key] }
+  }
+  $doc['generation'] = $Generation
+  $doc['stats'] = @{ elapsed_ms = $VectorMs }
+  $doc['quality'] = @{ svg_fidelity = $SvgFidelity }
+  $doc['preprocess'] = @{ png_transparency = $PngTransparency }
+
+  New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $OutDir 'metadata.json'),
+    ($doc | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
+
+  $runLog = @(
+    "status=$Status",
+    "generation_ms=$([int]$Generation['duration_ms'])",
+    "vector_ms=$VectorMs"
+  )
+  [System.IO.File]::WriteAllLines((Join-Path $OutDir 'run.log'), $runLog, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Invoke-Vectorize {
   <#
     调用 vectorizer 并把 transparent.png / preview.png / result.svg 落盘。
@@ -838,8 +1014,12 @@ function Invoke-Vectorize {
   param($Ctx, [string]$PngPath, [string]$ImageName, [string]$OutDir, [string]$Tag)
 
   $sub = [PSCustomObject]@{
-    Checks    = (New-Object System.Collections.ArrayList)
-    Artifacts = (New-Object System.Collections.ArrayList)
+    Checks          = (New-Object System.Collections.ArrayList)
+    Artifacts       = (New-Object System.Collections.ArrayList)
+    # 写历史索引时需要：耗时与质量分
+    ElapsedSec      = 0.0
+    SvgFidelity     = $null
+    PngTransparency = $null
   }
 
   $body = @{
@@ -849,34 +1029,39 @@ function Invoke-Vectorize {
     vector      = @{ preset = $Ctx.VectorPreset }
   }
 
-  Write-Host "  -> POST $($Ctx.VectorizerBase)/api/v1/vectorize  $ImageName"
+  Write-Note '正在矢量化…'
+  Write-Verbose "  -> POST $($Ctx.VectorizerBase)/api/v1/vectorize  $ImageName"
   $resp = Invoke-JsonPost -Url "$($Ctx.VectorizerBase)/api/v1/vectorize" -Body $body `
-    -TimeoutSec $Ctx.VectorTimeoutSec -Label '矢量化中'
+    -TimeoutSec $Ctx.VectorTimeoutSec -Label '正在矢量化'
 
   $ok = ($resp.Status -eq 200)
   [void]$sub.Checks.Add([PSCustomObject]@{
-      Label  = "$Tag · 矢量化返回 200"
-      Status = if ($ok) { 'PASS' } else { 'FAIL' }
-      Detail = "HTTP $($resp.Status)"
+      Label   = "$Tag · 矢量化返回 200"
+      Status  = if ($ok) { 'PASS' } else { 'FAIL' }
+      Detail  = "HTTP $($resp.Status)"
+      Display = "$Tag · 矢量化失败"
     })
   if (-not $ok) { return $sub }
 
+  $sub.ElapsedSec = $resp.ElapsedSec
   $payload = $resp.Json
   foreach ($field in @('transparent_png', 'preview_png', 'png')) {
     $value = [string](Get-DeepValue $payload $field)
     $valid = $value.StartsWith('data:image/png;base64,')
     [void]$sub.Checks.Add([PSCustomObject]@{
-        Label  = "$Tag · $field 是 data:image/png;base64"
-        Status = if ($valid) { 'PASS' } else { 'FAIL' }
-        Detail = ''
+        Label   = "$Tag · $field 是 data:image/png;base64"
+        Status  = if ($valid) { 'PASS' } else { 'FAIL' }
+        Detail  = ''
+        Display = "$Tag · 矢量化结果缺少图片"
       })
   }
 
   $svg = [string](Get-DeepValue $payload 'svg')
   [void]$sub.Checks.Add([PSCustomObject]@{
-      Label  = "$Tag · svg 非空"
-      Status = if ($svg.StartsWith('<')) { 'PASS' } else { 'FAIL' }
-      Detail = if ($svg) { "{0:N1} KB" -f ($svg.Length / 1024) } else { '空' }
+      Label   = "$Tag · svg 非空"
+      Status  = if ($svg.StartsWith('<')) { 'PASS' } else { 'FAIL' }
+      Detail  = if ($svg) { "{0:N1} KB" -f ($svg.Length / 1024) } else { '空' }
+      Display = "$Tag · 没有生成 SVG"
     })
   if (-not $svg.StartsWith('<')) { return $sub }
 
@@ -891,32 +1076,44 @@ function Invoke-Vectorize {
 
     $transparentSize = Get-DataUrlPngSize -DataUrl ([string](Get-DeepValue $payload 'transparent_png'))
     [void]$sub.Checks.Add([PSCustomObject]@{
-        Label  = "$Tag · 透明图可解码"
-        Status = if ($transparentSize[0] -gt 0 -and $transparentSize[1] -gt 0) { 'PASS' } else { 'FAIL' }
-        Detail = "$($transparentSize[0])x$($transparentSize[1])"
+        Label   = "$Tag · 透明图可解码"
+        Status  = if ($transparentSize[0] -gt 0 -and $transparentSize[1] -gt 0) { 'PASS' } else { 'FAIL' }
+        Detail  = "$($transparentSize[0])x$($transparentSize[1])"
+        Display = "$Tag · 透明图无法读取"
       })
   } catch {
-    [void]$sub.Checks.Add([PSCustomObject]@{ Label = "$Tag · 矢量化解码失败"; Status = 'FAIL'; Detail = $_.Exception.Message })
+    [void]$sub.Checks.Add([PSCustomObject]@{
+        Label = "$Tag · 矢量化解码失败"; Status = 'FAIL'; Detail = $_.Exception.Message
+        Display = "$Tag · 矢量化结果无法保存"
+      })
   }
 
   # SVG 结构校验：SVG 场景不单独跑，并入这里
   $structure = Test-SvgStructure -SvgText $svg
   [void]$sub.Checks.Add([PSCustomObject]@{
-      Label  = "$Tag · SVG 结构合法"
-      Status = if ($structure.Ok) { 'PASS' } else { 'FAIL' }
-      Detail = if ($structure.Ok) { "$($structure.PathCount) 条 path" } else { $structure.Reason }
+      Label   = "$Tag · SVG 结构合法"
+      Status  = if ($structure.Ok) { 'PASS' } else { 'FAIL' }
+      Detail  = if ($structure.Ok) { "$($structure.PathCount) 条 path" } else { $structure.Reason }
+      Display = "$Tag · SVG 内容不完整"
     })
 
-  $quality = Get-DeepValue (Get-DeepValue $payload 'metadata') 'quality'
+  $vecMetadata = Get-DeepValue $payload 'metadata'
+  $quality = Get-DeepValue $vecMetadata 'quality'
   $fidelity = Get-DeepValue $quality 'svg_fidelity'
+  $sub.SvgFidelity = $fidelity
+  $sub.PngTransparency = Get-DeepValue (Get-DeepValue $vecMetadata 'preprocess') 'png_transparency'
   if ($null -eq $fidelity) {
-    [void]$sub.Checks.Add([PSCustomObject]@{ Label = "$Tag · svg_fidelity"; Status = 'WARN'; Detail = '为 null（允许）' })
+    [void]$sub.Checks.Add([PSCustomObject]@{
+        Label = "$Tag · svg_fidelity"; Status = 'WARN'; Detail = '为 null（允许）'
+        Display = "$Tag · 质量评分缺失（不影响结果）"
+      })
   } else {
     $inRange = ($fidelity -is [double] -or $fidelity -is [int] -or $fidelity -is [decimal]) -and $fidelity -ge 0 -and $fidelity -le 100
     [void]$sub.Checks.Add([PSCustomObject]@{
-        Label  = "$Tag · svg_fidelity 在 [0,100]"
-        Status = if ($inRange) { 'PASS' } else { 'FAIL' }
-        Detail = "$fidelity"
+        Label   = "$Tag · svg_fidelity 在 [0,100]"
+        Status  = if ($inRange) { 'PASS' } else { 'FAIL' }
+        Detail  = "$fidelity"
+        Display = "$Tag · 质量评分异常"
       })
   }
 
@@ -936,7 +1133,7 @@ function Invoke-BatchScenario {
   $root = Join-Path $Ctx.ReportDir 'scenarios\02_batch'
 
   $rows = @(Read-RoutesFixture -Path $fixture)
-  if (-not (Add-Check $result ($rows.Count -eq 3) 'fixture 解析出 3 条' "$($rows.Count) 条")) {
+  if (-not (Add-Check $result ($rows.Count -eq 3) 'fixture 解析出 3 条' "$($rows.Count) 条" -DisplayText '测试输入不完整')) {
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }
@@ -946,13 +1143,19 @@ function Invoke-BatchScenario {
     return $result
   }
 
+  # 逐条产物记录：供桌面端「历史任务」的批量条目使用
+  $itemRecords = New-Object System.Collections.ArrayList
+  # 回填到表单的批量输入（文本 | 提示词 | 负面 | seed | 分辨率）
+  $batchInputLines = @()
+
   for ($i = 0; $i -lt $rows.Count; $i++) {
     $row = $rows[$i]
     $index = $i + 1
     $text = $row.Text
     $expectedWorkflow = $row.ExpectedWorkflow
-    Write-Host ""
-    Write-Host "  --- 第 $index/3 条：$text  （期望 $expectedWorkflow）" -ForegroundColor Cyan
+    Write-Host ''
+    Write-Note "第 $index/3 条：$text"
+    Write-Verbose "  --- 第 $index/3 条：$text（期望 $expectedWorkflow）"
     $itemWatch = [System.Diagnostics.Stopwatch]::StartNew()
 
     $outDir = Join-Path $root ("{0}_{1}" -f $index, ($text -replace '\s', '_'))
@@ -967,38 +1170,47 @@ function Invoke-BatchScenario {
       workflow        = ''
     }
 
+    Write-Note '正在生成图片…'
     $resp = Invoke-JsonPost -Url "$($Ctx.Txt2ImgBase)/api/v1/txt2img" -Body $body `
-      -TimeoutSec $Ctx.GenTimeoutSec -Label '生成中'
+      -TimeoutSec $Ctx.GenTimeoutSec -Label '正在生成图片'
+    $generationMs = [int]($resp.ElapsedSec * 1000)
 
-    if (-not (Add-Check $result ($resp.Status -eq 200) "#$index $text · 生图返回 200" "HTTP $($resp.Status)")) { continue }
+    $batchInputLines += ("{0} | {1} | {2} | {3} | {4}" -f $text, $row.Prompt, $row.Negative, $row.Seed, $row.Resolution)
+
+    if (-not (Add-Check $result ($resp.Status -eq 200) "#$index $text · 生图返回 200" "HTTP $($resp.Status)" -DisplayText "#$index $text · 图片生成失败")) { continue }
 
     $payload = $resp.Json
     $meta = Get-DeepValue $payload 'metadata'
     if ($null -eq $meta) { $meta = @{} }
 
     $reasons = @(Get-StubReasons -Metadata $meta -Payload $payload)
-    if (-not (Add-Check $result ($reasons.Count -eq 0) "#$index $text · 真走 ComfyUI" ($reasons -join '；'))) { continue }
+    if (-not (Add-Check $result ($reasons.Count -eq 0) "#$index $text · 真走 ComfyUI" ($reasons -join '；') `
+          -DisplayText "#$index $text · 没有真正生成图片（服务回退了）")) { continue }
 
     $tier = Get-DeepValue $meta 'fallback_tier'
-    Add-Check $result ($tier -eq 0) "#$index $text · 首选工作流即命中（tier=0）" "tier=$tier"
+    Add-Check $result ($tier -eq 0) "#$index $text · 首选工作流即命中（tier=0）" "tier=$tier" `
+      -DisplayText "#$index $text · 生成引擎选择异常"
 
     $got = [string](Get-DeepValue $meta 'workflow_used')
-    Add-Check $result ($got -eq $expectedWorkflow) "#$index $text · workflow_used == $expectedWorkflow" "实际 $got"
+    Add-Check $result ($got -eq $expectedWorkflow) "#$index $text · workflow_used == $expectedWorkflow" "实际 $got" `
+      -DisplayText "#$index $text · 生成引擎选择异常"
 
     # text_profile 是「文本分类」（chinese/english/mixed），不是渲染模板名
     $textProfile = Get-DeepValue (Get-DeepValue $meta 'prompt_synthesis') 'text_profile'
-    Add-Check $result ($textProfile -eq $row.ExpectedProfile) "#$index $text · 文本分类 == $($row.ExpectedProfile)" "实际 $textProfile"
+    Add-Check $result ($textProfile -eq $row.ExpectedProfile) "#$index $text · 文本分类 == $($row.ExpectedProfile)" "实际 $textProfile" `
+      -DisplayText "#$index $text · 文本分类异常"
 
     $wantLatent = if ($expectedWorkflow.StartsWith('qwen')) { @(1328, 1328) } else { @(1024, 1024) }
     $latent = Get-LatentSize -WorkflowApi (Get-DeepValue $payload 'workflow_api')
     $latentText = if ($null -eq $latent) { '<未找到 latent 节点>' } else { "$($latent[0])x$($latent[1])" }
     Add-Check $result ($null -ne $latent -and $latent[0] -eq $wantLatent[0] -and $latent[1] -eq $wantLatent[1]) `
-      "#$index $text · latent == $($wantLatent[0])x$($wantLatent[1])" "实际 $latentText"
+      "#$index $text · latent == $($wantLatent[0])x$($wantLatent[1])" "实际 $latentText" `
+      -DisplayText "#$index $text · 生成尺寸与预期不符"
 
     $pngPath = Join-Path $outDir 'original.png'
     $imageBase64 = [string](Get-DeepValue $payload 'image_base64')
     if ([string]::IsNullOrWhiteSpace($imageBase64)) {
-      Add-Check $result $false "#$index $text · 响应含 image_base64"
+      Add-Check $result $false "#$index $text · 响应含 image_base64" '' -DisplayText "#$index $text · 服务没有返回图片"
       continue
     }
 
@@ -1007,25 +1219,84 @@ function Invoke-BatchScenario {
       [System.IO.File]::WriteAllBytes($pngPath, [Convert]::FromBase64String(($imageBase64 -replace '^data:[^,]*,', '')))
       $pngSize = Get-DataUrlPngSize -DataUrl $imageBase64
       $sizeMatch = ($null -ne $latent -and $pngSize[0] -eq $latent[0] -and $pngSize[1] -eq $latent[1])
-      Add-Check $result $sizeMatch "#$index $text · original.png 尺寸 == latent" "$($pngSize[0])x$($pngSize[1])"
-      [System.IO.File]::WriteAllText((Join-Path $outDir 'metadata.json'),
-        ($meta | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
+      Add-Check $result $sizeMatch "#$index $text · original.png 尺寸 == latent" "$($pngSize[0])x$($pngSize[1])" `
+        -DisplayText "#$index $text · 图片尺寸与预期不符"
       [void]$result.Artifacts.Add($pngPath)
     } catch {
-      Add-Check $result $false "#$index $text · original.png 落盘失败" $_.Exception.Message
+      Add-Check $result $false "#$index $text · original.png 落盘失败" $_.Exception.Message `
+        -DisplayText "#$index $text · 图片保存失败"
       continue
     }
 
     $vec = Invoke-Vectorize -Ctx $Ctx -PngPath $pngPath -ImageName "batch-$index.png" -OutDir $outDir -Tag "#$index $text"
     foreach ($check in $vec.Checks) {
-      Add-Check $result ($check.Status -eq 'PASS') $check.Label $check.Detail -WarnOnly:($check.Status -eq 'WARN')
+      Add-Check $result ($check.Status -eq 'PASS') $check.Label $check.Detail -WarnOnly:($check.Status -eq 'WARN') -DisplayText $check.Display
     }
     foreach ($artifact in $vec.Artifacts) { [void]$result.Artifacts.Add($artifact) }
 
+    # ── 落 metadata / run.log，并登记这条产物 ──
+    $vectorMs = [int]($vec.ElapsedSec * 1000)
+    $hasSvg = Test-Path -LiteralPath (Join-Path $outDir 'result.svg')
+    $itemStatus = if ($hasSvg) { 'success' } else { 'failed' }
+    $itemError = if ($itemStatus -eq 'failed') {
+      (@($result.Checks | Where-Object { $_.Status -eq 'FAIL' -and $_.Label -like "#$index *" } |
+          ForEach-Object { $_.Label }) -join '；')
+    } else { '' }
+
+    Write-TaskMetadataFile -OutDir $outDir -GenerationMeta $meta `
+      -Generation @{
+        text        = $text
+        prompt      = $row.Prompt
+        seed        = [int]$row.Seed
+        resolution  = $row.Resolution
+        duration_ms = $generationMs
+      } `
+      -VectorMs $vectorMs -SvgFidelity $vec.SvgFidelity -PngTransparency $vec.PngTransparency -Status $itemStatus
+
+    [void]$itemRecords.Add(@{
+        index           = $i
+        taskDir         = $outDir
+        taskName        = (Split-Path -Leaf $outDir)
+        outputRoot      = $Ctx.OutputRoot
+        paths           = @{
+          original    = Join-Path $outDir 'original.png'
+          transparent = Join-Path $outDir 'transparent.png'
+          preview     = Join-Path $outDir 'preview.png'
+          svg         = Join-Path $outDir 'result.svg'
+          metadata    = Join-Path $outDir 'metadata.json'
+          log         = Join-Path $outDir 'run.log'
+        }
+        text            = $text
+        prompt          = $row.Prompt
+        seed            = [int]$row.Seed
+        generationMs    = $generationMs
+        vectorMs        = $vectorMs
+        status          = $itemStatus
+        error           = $itemError
+        rawStatus       = $itemStatus
+        pngTransparency = $vec.PngTransparency
+        svgFidelity     = $vec.SvgFidelity
+      })
+
     $itemSeconds = $itemWatch.Elapsed.TotalSeconds
-    Write-Host ("      [完成] 本条累计 {0:N1}s" -f $itemSeconds) -ForegroundColor DarkGray
+    Write-Verbose ("  [done] item finished in {0:N1}s" -f $itemSeconds)
     if ($Ctx.MaxE2eSeconds -gt 0 -and $itemSeconds -gt $Ctx.MaxE2eSeconds) {
-      Add-Check $result $false "#$index $text · 耗时超阈值" ("{0:N1}s > {1}s" -f $itemSeconds, $Ctx.MaxE2eSeconds)
+      Add-Check $result $false "#$index $text · 耗时超阈值" ("{0:N1}s > {1}s" -f $itemSeconds, $Ctx.MaxE2eSeconds) `
+        -DisplayText "#$index $text · 生成耗时过长"
+    }
+  }
+
+  # 批量条目：历史面板点开后可在结果区逐条切换查看
+  if ($itemRecords.Count -gt 0) {
+    $result.Data = @{
+      Kind       = 'batch'
+      TaskDir    = $root
+      Title      = "验收 · 批量（$($itemRecords.Count) 条）"
+      BatchInput = ($batchInputLines -join "`n")
+      Items      = @($itemRecords)
+      Negative   = ''
+      Resolution = '1024 x 1024'
+      Seed       = 0
     }
   }
 
@@ -1103,7 +1374,7 @@ function New-PreparedFixture {
     throw "$($Config.Label) expected $($Config.ExpectedRows) rows, got $($rows.Count)."
   }
   if ($rows.Count -ge $Config.MinRows) {
-    Write-Host "$($Config.Label) row count ok: $($rows.Count) rows, minimum is $($Config.MinRows)." -ForegroundColor Green
+    Write-Verbose "  $($Config.Label) row count ok: $($rows.Count) rows, minimum is $($Config.MinRows)."
   }
 
   New-Item -ItemType Directory -Path (Split-Path -Parent $PreparedPath) -Force | Out-Null
@@ -1433,55 +1704,115 @@ function Get-HistoryId {
   }
 }
 
-function Add-AcceptanceHistoryEntry {
+function New-SingleHistoryEntry {
   <#
-    把本次验收登记进 outputs\tasks-index.json。
+    为单图场景构造一条桌面端可恢复的历史条目。
 
-    单图/批量场景与 300 条套件共用同一入口，条目结构与 CLI batch.mjs 写入的
-    保持一致（桌面端 normalizeHistoryIndexEntries 只认 outputRoot，其余字段宽松）。
+    mode='single' 时，桌面端按 paths.original/transparent/preview/svg/metadata
+    直接读盘展示，所以 paths 必须指向真实产物，而不是报告文件。
   #>
-  param(
-    [string]$Root,
-    [string]$TaskDir,
-    [string]$Title,
-    [string]$Mode,
-    [array]$Items
-  )
+  param($Data, [string]$Root)
 
-  $rootIndexPath = Join-Path $Root "tasks-index.json"
-  $rootEntries = @(Read-JsonArrayFile $rootIndexPath)
+  $ok = ($Data.Status -eq 'success')
 
-  $succeeded = @($Items | Where-Object { $_.status -eq "success" }).Count
-  $failed = @($Items | Where-Object { $_.status -ne "success" }).Count
-  $status = if ($failed -gt 0) { if ($succeeded -gt 0) { "partial ($succeeded/$($Items.Count))" } else { "failed" } } else { "completed" }
-
-  $entry = [PSCustomObject]@{
-    id          = Get-HistoryId "$TaskDir|$Mode"
-    mode        = $Mode
-    title       = $Title
-    time        = (Get-Date).ToString("o")
-    status      = $status
-    taskDir     = $TaskDir
+  return [PSCustomObject]@{
+    id          = Get-HistoryId "$($Data.TaskDir)|single"
+    mode        = 'single'
+    title       = $Data.Title
+    time        = (Get-Date).ToString('o')
+    status      = if ($ok) { 'completed' } else { 'failed' }
+    taskDir     = $Data.TaskDir
     outputRoot  = $Root
-    paths       = [PSCustomObject]@{ summaryDir = $TaskDir }
-    inputParams = [PSCustomObject]@{ mode = $Mode }
-    itemsCount  = $Items.Count
+    paths       = [PSCustomObject]$Data.Paths
+    inputParams = [PSCustomObject]@{
+      mode       = 'single'
+      text       = $Data.Text
+      prompt     = $Data.Prompt
+      negative   = $Data.Negative
+      resolution = $Data.Resolution
+      format     = 'PNG'
+      seed       = $Data.Seed
+      vector     = @{ preset = $VectorPreset }
+    }
+    itemsCount  = 1
+    succeeded   = if ($ok) { 1 } else { 0 }
+    failed      = if ($ok) { 0 } else { 1 }
+    thumb       = ''
+    batchItems  = @()
+  }
+}
+
+function New-BatchHistoryEntry {
+  <#
+    为批量场景构造一条历史条目。
+
+    每条产物放进 batchItems，桌面端点开后可逐条切换查看——与普通批量任务一致。
+  #>
+  param($Data, [string]$Root)
+
+  $items = @($Data.Items)
+  $succeeded = @($items | Where-Object { $_.status -eq 'success' }).Count
+  $failed = @($items | Where-Object { $_.status -ne 'success' }).Count
+  $status = if ($failed -gt 0) {
+    if ($succeeded -gt 0) { "partial ($succeeded/$($items.Count))" } else { 'failed' }
+  } else { 'completed' }
+
+  return [PSCustomObject]@{
+    id          = Get-HistoryId "$($Data.TaskDir)|batch"
+    mode        = 'batch'
+    title       = $Data.Title
+    time        = (Get-Date).ToString('o')
+    status      = $status
+    taskDir     = $Data.TaskDir
+    outputRoot  = $Root
+    paths       = [PSCustomObject]@{ summaryDir = $Data.TaskDir }
+    inputParams = [PSCustomObject]@{
+      mode       = 'batch'
+      batch      = $Data.BatchInput
+      negative   = $Data.Negative
+      resolution = $Data.Resolution
+      format     = 'PNG'
+      seed       = $Data.Seed
+      vector     = @{ preset = $VectorPreset }
+    }
+    itemsCount  = $items.Count
     succeeded   = $succeeded
     failed      = $failed
-    thumb       = ""
-    batchItems  = $Items
+    thumb       = ''
+    batchItems  = $items
   }
+}
 
-  $existingIndex = -1
-  for ($i = 0; $i -lt $rootEntries.Count; $i++) {
-    if ([string]$rootEntries[$i].taskDir -eq $TaskDir) { $existingIndex = $i; break }
+function Save-HistoryEntries {
+  <#
+    把若干条目合并进 outputs\tasks-index.json。
+
+    按 id 或 taskDir 覆盖同一条记录；同时清掉旧版本写入的 mode='acceptance'
+    聚合条目——那些条目的 paths 指向报告文件，点开恢复不出任何图形。
+  #>
+  param([string]$Root, [array]$Entries)
+
+  if ($Entries.Count -eq 0) { return }
+
+  $rootIndexPath = Join-Path $Root 'tasks-index.json'
+  $rootEntries = @(Read-JsonArrayFile $rootIndexPath | Where-Object { [string]$_.mode -ne 'acceptance' })
+
+  foreach ($entry in $Entries) {
+    $found = -1
+    for ($i = 0; $i -lt $rootEntries.Count; $i++) {
+      if ([string]$rootEntries[$i].id -eq [string]$entry.id -or
+          [string]$rootEntries[$i].taskDir -eq [string]$entry.taskDir) {
+        $found = $i
+        break
+      }
+    }
+    if ($found -ge 0) { $rootEntries[$found] = $entry } else { $rootEntries += $entry }
   }
-  if ($existingIndex -ge 0) { $rootEntries[$existingIndex] = $entry } else { $rootEntries += $entry }
 
   if ($rootEntries.Count -gt 200) { $rootEntries = @($rootEntries | Select-Object -Last 200) }
 
   Write-JsonArrayFile -Path $rootIndexPath -Items $rootEntries
-  Write-Host "history index: $rootIndexPath"
+  Write-Verbose "history index: $rootIndexPath（本次 $($Entries.Count) 条）"
 }
 
 function Get-SummaryHistoryEntry {
@@ -1599,7 +1930,7 @@ function Sync-AcceptanceHistoryIndex {
     $rootEntries = @($rootEntries | Select-Object -Last 200)
   }
   Write-JsonArrayFile -Path $rootIndexPath -Items $rootEntries
-  Write-Host "history index: $rootIndexPath"
+  Write-Verbose "history index: $rootIndexPath"
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1637,17 +1968,18 @@ function Invoke-FullSuite {
   try {
     $expectedRows = @(New-PreparedFixture -FixturePath $config.Fixture -PreparedPath $preparedFixture -Config $config)
   } catch {
-    Add-Check $result $false '准备 300 条输入' $_.Exception.Message
+    Add-Check $result $false '准备 300 条输入' $_.Exception.Message -DisplayText '无法准备测试输入'
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }
-  Write-Host "Prepared input: $preparedFixture"
-  Write-Host "Rows: $($expectedRows.Count)"
+  Write-Host "  正在批量生成 $($expectedRows.Count) 条，请耐心等待…" -ForegroundColor Cyan
+  Write-Verbose "  prepared input: $preparedFixture"
+  Write-Verbose "  rows: $($expectedRows.Count)"
 
   try {
     $cliExe = Resolve-CliExecutable $CliPath
   } catch {
-    Add-Check $result $false '定位 gen2vec_cli.exe' $_.Exception.Message
+    Add-Check $result $false '定位 gen2vec_cli.exe' $_.Exception.Message -DisplayText '找不到批量生成程序'
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }
@@ -1666,7 +1998,7 @@ function Invoke-FullSuite {
   )
   if ($NoVectorize) { $batchArgs += "--no-vectorize" }
 
-  Write-Host "Command: $(Format-CommandLine $cliExe $batchArgs)"
+  Write-Verbose "  command: $(Format-CommandLine $cliExe $batchArgs)"
   if ($DryRun) {
     Add-Check $result $true 'dry-run：不实际调用 CLI'
     $result.Elapsed = $watch.Elapsed.TotalSeconds
@@ -1675,7 +2007,7 @@ function Invoke-FullSuite {
 
   & $cliExe @batchArgs
   if ($LASTEXITCODE -ne 0) {
-    Add-Check $result $false 'CLI batch 退出码' "exit=$LASTEXITCODE"
+    Add-Check $result $false 'CLI batch 退出码' "exit=$LASTEXITCODE" -DisplayText '批量生成异常退出'
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }
@@ -1683,16 +2015,19 @@ function Invoke-FullSuite {
   try {
     $summaryPath = Get-LatestSummary $OutputRoot_
   } catch {
-    Add-Check $result $false '定位 batch_summary.csv' $_.Exception.Message
+    Add-Check $result $false '定位 batch_summary.csv' $_.Exception.Message -DisplayText '找不到批量结果文件'
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }
 
   $report = Test-AcceptanceArtifacts -SummaryPath $summaryPath -ExpectedRows $expectedRows -Config $config
-  Add-Check $result ($report.Failures.Count -eq 0) '300 条产物核验' `
-    "总 $($report.Total) 条，失败行 $($report.FailedRows)，问题 $($report.Failures.Count) 条"
-  foreach ($failure in ($report.Failures | Select-Object -First 30)) {
-    Write-Host "  [FAIL] $failure" -ForegroundColor Red
+  Add-Check $result ($report.Failures.Count -eq 0) '完整套件产物核验' `
+    "总 $($report.Total) 条，失败行 $($report.FailedRows)，问题 $($report.Failures.Count) 条" `
+    -DisplayText '完整套件有产物缺失'
+  $shown = if (Test-DetailedOutput) { $report.Failures } else { $report.Failures | Select-Object -First 5 }
+  foreach ($failure in $shown) { Write-Host "  - $failure" -ForegroundColor Red }
+  if (-not (Test-DetailedOutput) -and $report.Failures.Count -gt 5) {
+    Write-Host "  …其余 $($report.Failures.Count - 5) 项略。" -ForegroundColor DarkGray
   }
   [void]$result.Artifacts.Add($summaryPath)
 
@@ -1780,7 +2115,7 @@ function Invoke-AcceptanceMain {
 
   Write-Host ''
   Write-Host '============================================================' -ForegroundColor Cyan
-  Write-Host ' 验收测试 · 单图矢量化 + 批量生成' -ForegroundColor Cyan
+  Write-Host ' 验收测试' -ForegroundColor Cyan
   Write-Host '============================================================' -ForegroundColor Cyan
 
   # ── 契约漂移守卫（只 WARN，不判失败）──
@@ -1793,7 +2128,10 @@ function Invoke-AcceptanceMain {
   } catch {
     $drift = @("跳过常量漂移检查：$($_.Exception.Message)")
   }
-  foreach ($item in $drift) { Write-Host "[环境] WARN $item" -ForegroundColor Yellow }
+  # 常量漂移属于内部校验，默认不打扰用户（仍完整写入报告）
+  if (Test-DetailedOutput) {
+    foreach ($item in $drift) { Write-Host "  [警告] $item" -ForegroundColor Yellow }
+  }
 
   # ── VerifyOnly：只核验已存在的汇总表 ──
   if (-not [string]::IsNullOrWhiteSpace($VerifyOnly)) {
@@ -1802,33 +2140,53 @@ function Invoke-AcceptanceMain {
     $config = Get-AcceptanceSuiteConfig
     $rows = @(Import-Csv -LiteralPath $summaryPath -Encoding UTF8)
     $report = Test-AcceptanceArtifacts -SummaryPath $summaryPath -ExpectedRows $rows -Config $config
-    Write-Host "Total: $($report.Total)  Failed rows: $($report.FailedRows)  Failures: $($report.Failures.Count)"
-    $report.Failures | Select-Object -First 50 | ForEach-Object { Write-Host "FAIL $_" -ForegroundColor Red }
-    if ($report.Failures.Count -gt 0) { throw "Acceptance failed: $($report.Failures.Count) failures" }
-    Write-Host 'PASS acceptance' -ForegroundColor Green
-    return 0
+    if ($report.Failures.Count -eq 0) {
+      Write-Outcome 通过 "汇总表核验通过（$($report.Total) 条）"
+      return 0
+    }
+
+    Write-Outcome 失败 "汇总表核验未通过（$($report.Failures.Count) 个问题）" `
+      "总 $($report.Total) 条，失败行 $($report.FailedRows)"
+    $shown = if (Test-DetailedOutput) { $report.Failures } else { $report.Failures | Select-Object -First 5 }
+    $shown | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    if (-not (Test-DetailedOutput) -and $report.Failures.Count -gt 5) {
+      Write-Host "  …其余 $($report.Failures.Count - 5) 项略。" -ForegroundColor DarkGray
+    }
+    return 1
   }
 
   # ── 环境门禁 ──
   # dry-run 只做一次快速探测并如实报告，不会为了等后端而空转，也不因未就绪而退出。
   if (-not $SkipHealth) {
     Write-Host ''
-    Write-Host '[环境] 检查后端与 ComfyUI ...' -ForegroundColor Cyan
+    Write-Host '检查运行环境…' -ForegroundColor Cyan
     if ($DryRun) {
+      # dry-run 只做一次快速探测，不为等后端而空转
       $txtOk = Test-HttpReady -Url "$Txt2ImgBase_/healthz" -TimeoutSec 3
       $vecOk = Test-HttpReady -Url "$VectorizerBase_/healthz" -TimeoutSec 3
       $comfyOk = Test-HttpReady -Url "$ComfyUiHost_/system_stats" -TimeoutSec 5
-      Write-Host "  txt2img-api    $Txt2ImgBase_  ->  $(if ($txtOk) { '就绪' } else { '未就绪' })"
-      Write-Host "  vectorizer-api $VectorizerBase_  ->  $(if ($vecOk) { '就绪' } else { '未就绪' })"
-      Write-Host "  ComfyUI        $ComfyUiHost_  ->  $(if ($comfyOk) { '就绪' } else { '未就绪' })"
+      Write-Outcome $(if ($txtOk) { '通过' } else { '失败' }) $(if ($txtOk) { '图像生成服务已就绪' } else { '图像生成服务未启动' })
+      Write-Outcome $(if ($vecOk) { '通过' } else { '失败' }) $(if ($vecOk) { '矢量化服务已就绪' } else { '矢量化服务未启动' })
+      Write-Outcome $(if ($comfyOk) { '通过' } else { '警告' }) $(if ($comfyOk) { '绘图引擎已就绪' } else { '绘图引擎尚未启动' })
     } else {
       $txtOk = Wait-BackendReady -Base $Txt2ImgBase_ -Name 'txt2img-api' -Seconds $Wait
+      if ($txtOk) { Write-Outcome 通过 '图像生成服务已就绪' } else { Write-Outcome 失败 '图像生成服务未启动' }
+
       $vecOk = Wait-BackendReady -Base $VectorizerBase_ -Name 'vectorizer-api' -Seconds $Wait
+      if ($vecOk) { Write-Outcome 通过 '矢量化服务已就绪' } else { Write-Outcome 失败 '矢量化服务未启动' }
+
+      # 绘图引擎由图像生成服务按需拉起，这里只报告状态，不阻塞
+      $comfyOk = Test-HttpReady -Url "$ComfyUiHost_/system_stats" -TimeoutSec 5
+      if ($comfyOk) { Write-Outcome 通过 '绘图引擎已就绪' }
+      else { Write-Host '  [提示] 绘图引擎将在生成时启动' -ForegroundColor DarkGray }
+
       if (-not ($txtOk -and $vecOk)) {
         Write-Host ''
-        Write-Host '后端未就绪。请先打开桌面端（它会自动拉起两个后端），或手动启动：' -ForegroundColor Red
-        Write-Host '  txt2img-api  ->  http://127.0.0.1:9001' -ForegroundColor Red
-        Write-Host '  vectorizer-api  ->  http://127.0.0.1:8000' -ForegroundColor Red
+        Write-Host '  请打开桌面端（会自动启动所需服务）后重试。' -ForegroundColor Red
+        if (Test-DetailedOutput) {
+          Write-Host "  txt2img-api     ->  $Txt2ImgBase_" -ForegroundColor Red
+          Write-Host "  vectorizer-api  ->  $VectorizerBase_" -ForegroundColor Red
+        }
         return 2
       }
     }
@@ -1836,24 +2194,33 @@ function Invoke-AcceptanceMain {
 
   if ($DryRun) {
     Write-Host ''
-    Write-Host '[dry-run] 将依次执行：' -ForegroundColor Yellow
+    Write-Host '将依次执行：' -ForegroundColor Cyan
     $planStep = 0
     $planStep++
-    Write-Host "  $planStep. 单图矢量化   POST $Txt2ImgBase_/api/v1/txt2img   text=$script:SingleText"
-    Write-Host "                  POST $VectorizerBase_/api/v1/vectorize"
+    Write-Host "  $planStep. 单图生成（$script:SingleText）"
     if (-not $SkipBatch) {
       $planStep++
-      $routesHint = try { Resolve-FixturePath -Name 'routes.txt' } catch { '<routes.txt 未找到>' }
-      Write-Host "  $planStep. 批量生成     POST $Txt2ImgBase_/api/v1/txt2img × 3（$routesHint）"
+      Write-Host "  $planStep. 批量生成（3 条）"
     }
     if ($Full) {
       $planStep++
-      Write-Host "  $planStep. 300 条套件   gen2vec_cli.exe batch --input-file <fixtures\acceptance.txt>"
+      Write-Host "  $planStep. 完整批量套件（安装包内置测试集）"
     }
-    Write-Host "  报告写入：$ReportDir_"
-    Write-Host '  [dry-run] 未发出任何请求，也未核验产物。' -ForegroundColor Yellow
+    Write-Host '结果将保存到：'
+    Write-Host "  $ReportDir_"
+
+    if (Test-DetailedOutput) {
+      Write-Host ''
+      Write-Host '  [verbose] 请求地址：'
+      Write-Host "    $Txt2ImgBase_/api/v1/txt2img"
+      Write-Host "    $VectorizerBase_/api/v1/vectorize"
+      if ($Full) { Write-Host '    gen2vec_cli.exe batch --input-file <fixtures\acceptance.txt>' }
+    }
+
+    Write-Host ''
+    Write-Host '[dry-run] 未发出任何请求，也未核验产物。' -ForegroundColor Yellow
     if (-not $SkipHealth -and -not ($txtOk -and $vecOk)) {
-      Write-Host '  [dry-run] 注意：后端当前未就绪，实跑前需先打开桌面端。' -ForegroundColor Yellow
+      Write-Host '[dry-run] 注意：服务当前未就绪，实跑前需先打开桌面端。' -ForegroundColor Yellow
     }
     return 0
   }
@@ -1864,6 +2231,7 @@ function Invoke-AcceptanceMain {
     VectorizerBase  = $VectorizerBase_
     ComfyUiHost     = $ComfyUiHost_
     ReportDir       = $ReportDir_
+    OutputRoot      = $OutputRoot_
     ComfyUiWaitSec  = $ComfyUiWaitSec
     GenTimeoutSec   = $GenTimeoutSec
     VectorTimeoutSec = $VectorTimeoutSec
@@ -1881,33 +2249,51 @@ function Invoke-AcceptanceMain {
   if ($Full) { $totalScenarios += 1 }
 
   $step = 0
+  $batch = $null
 
   $step++
-  Write-Host ''
-  Write-Host "=== 场景 $step/$totalScenarios：单图矢量化（念奴娇 完整链路） ===" -ForegroundColor Cyan
+  Write-Stage "[$step/$totalScenarios] 单图生成：$script:SingleText"
   $single = Invoke-SingleScenario -Ctx $ctx
   [void]$results.Add($single)
-  Write-Host "  -> $($single.Status)  ($([Math]::Round($single.Elapsed, 1))s)"
+  if ($single.Status -eq 'FAIL') {
+    Write-Outcome 失败 "单图未完成（$(Format-Duration $single.Elapsed)）"
+  } elseif ($single.Status -eq 'WARN') {
+    Write-Outcome 警告 "单图完成，但有提示（$(Format-Duration $single.Elapsed)）"
+  } else {
+    Write-Outcome 通过 "单图完成（$(Format-Duration $single.Elapsed)）"
+  }
 
   if ($SkipBatch) {
-    Write-Host ''
-    Write-Host '=== 批量生成 —— 已按 -SkipBatch 跳过 ===' -ForegroundColor Yellow
+    Write-Stage '批量生成 —— 已跳过（-SkipBatch）'
   } else {
     $step++
-    Write-Host ''
-    Write-Host "=== 场景 $step/$totalScenarios：批量生成（3 条，覆盖三条路由链） ===" -ForegroundColor Cyan
+    Write-Stage "[$step/$totalScenarios] 批量生成：3 条"
     $batch = Invoke-BatchScenario -Ctx $ctx
     [void]$results.Add($batch)
-    Write-Host "  -> $($batch.Status)  ($([Math]::Round($batch.Elapsed, 1))s)"
+
+    $batchItems = @(if ($batch.Data -and $batch.Data.Items) { $batch.Data.Items } else { @() })
+    $batchSucceeded = @($batchItems | Where-Object { $_.status -eq 'success' }).Count
+    $batchTotal = if ($batchItems.Count -gt 0) { $batchItems.Count } else { 3 }
+    $batchDetail = "$batchSucceeded/$batchTotal 条成功，$(Format-Duration $batch.Elapsed)"
+    if ($batch.Status -eq 'FAIL') {
+      Write-Outcome 失败 "批量未完成（$batchDetail）"
+    } elseif ($batch.Status -eq 'WARN') {
+      Write-Outcome 警告 "批量完成，但有提示（$batchDetail）"
+    } else {
+      Write-Outcome 通过 "批量完成（$batchDetail）"
+    }
   }
 
   if ($Full) {
     $step++
-    Write-Host ''
-    Write-Host "=== 场景 $step/$totalScenarios：300 条完整套件 ===" -ForegroundColor Cyan
+    Write-Stage "[$step/$totalScenarios] 完整批量套件"
     $full = Invoke-FullSuite -Ctx $ctx -OutputRoot_ $OutputRoot_
     [void]$results.Add($full)
-    Write-Host "  -> $($full.Status)  ($([Math]::Round($full.Elapsed, 1))s)"
+    if ($full.Status -eq 'FAIL') {
+      Write-Outcome 失败 "完整套件未通过（$(Format-Duration $full.Elapsed)）"
+    } else {
+      Write-Outcome 通过 "完整套件通过（$(Format-Duration $full.Elapsed)）"
+    }
   }
 
   # ── 汇总 ──
@@ -1916,44 +2302,66 @@ function Invoke-AcceptanceMain {
   $warned = @($results | Where-Object { $_.Status -eq 'WARN' })
   $status = if ($failed.Count -gt 0) { 'FAIL' } elseif ($warned.Count -gt 0 -or $drift.Count -gt 0) { 'WARN' } else { 'PASS' }
 
+  $summaryTitle = if ($failed.Count -gt 0) { ' 验收结果：未通过' }
+  elseif ($warned.Count -gt 0 -or $drift.Count -gt 0) { ' 验收结果：通过（有提示）' }
+  else { ' 验收结果：通过' }
+
   Write-Host ''
   Write-Host '============================================================' -ForegroundColor Cyan
-  Write-Host ' SUMMARY' -ForegroundColor Cyan
+  Write-Host $summaryTitle -ForegroundColor $(if ($failed.Count -gt 0) { 'Red' } else { 'Green' })
   Write-Host '============================================================' -ForegroundColor Cyan
+
   foreach ($r in $results) {
-    Write-Host ("  {0,-40} : {1,-4}  ({2:N1}s)" -f $r.Name, $r.Status, $r.Elapsed)
+    $displayName = switch -Regex ($r.Name) {
+      '^单图' { '单图生成' }
+      '^批量' { '批量生成' }
+      '套件' { '完整套件' }
+      default { $r.Name }
+    }
+    $displayStatus = if ($r.Status -eq 'FAIL') { '未通过' } elseif ($r.Status -eq 'WARN') { '通过（有提示）' } else { '通过' }
+    $countSuffix = ''
+    if ($r.Name -match '^批量' -and $r.Data -and $r.Data.Items) {
+      $okCount = @($r.Data.Items | Where-Object { $_.status -eq 'success' }).Count
+      $countSuffix = "（$okCount/$(@($r.Data.Items).Count)）"
+    }
+    Write-Host "  $displayName：$displayStatus$countSuffix"
   }
-  foreach ($item in $drift) { Write-Host "  WARN 常量漂移：$item" -ForegroundColor Yellow }
-  Write-Host ("  累计耗时 {0:N1}s" -f $totalSeconds)
+  Write-Host "  总用时：$(Format-Duration $totalSeconds)"
+  if (Test-DetailedOutput) {
+    foreach ($item in $drift) { Write-Host "  [警告] $item" -ForegroundColor Yellow }
+  }
 
   # ── 报告 + 历史索引 ──
   $report = Write-AcceptanceReport -ReportDir_ $ReportDir_ -Results $results -Drift $drift -TotalSeconds $totalSeconds -Status $status
-  Write-Host "  report:    $($report.Text)"
-  Write-Host "  report:    $($report.Json)"
-
-  $items = @()
-  foreach ($r in $results) {
-    $items += [PSCustomObject]@{
-      index   = $items.Count
-      text    = $r.Name
-      status  = if ($r.Status -eq 'FAIL') { 'failed' } else { 'success' }
-      error   = if ($r.Status -eq 'FAIL') { @($r.Checks | Where-Object { $_.Status -eq 'FAIL' } | ForEach-Object { $_.Label }) -join '；' } else { '' }
-      taskDir = $ReportDir_
-      outputRoot = $OutputRoot_
-      paths   = [PSCustomObject]@{ report = $report.Text; reportJson = $report.Json }
-    }
+  Write-Host ''
+  Write-Host '  结果已保存到：'
+  Write-Host "  $ReportDir_"
+  if (Test-DetailedOutput) {
+    Write-Host "  report: $($report.Text)"
+    Write-Host "  report: $($report.Json)"
+  } else {
+    Write-Host '  可在桌面端「历史任务」中查看。'
   }
-  $entryTitle = if ($Full -and -not $SkipBatch) { '验收测试（单图 + 批量 + 300 条）' }
-  elseif ($SkipBatch) { '验收测试（单图）' }
-  else { '验收测试（单图 + 批量）' }
-  Add-AcceptanceHistoryEntry -Root $OutputRoot_ -TaskDir $ReportDir_ -Title $entryTitle -Mode 'acceptance' -Items $items
+
+  # 每个场景单独登记一条，桌面端「历史任务」点开后按 paths 读盘展示真实产物。
+  # 不再写聚合条目：那种条目只能指向报告文件，点开恢复不出任何图形。
+  $historyEntries = @()
+  if ($single.Data -and $single.Data.TaskDir -and $single.Data.Paths) {
+    $historyEntries += New-SingleHistoryEntry -Data $single.Data -Root $OutputRoot_
+  }
+  if ($batch -and $batch.Data -and $batch.Data.TaskDir -and @($batch.Data.Items).Count -gt 0) {
+    $historyEntries += New-BatchHistoryEntry -Data $batch.Data -Root $OutputRoot_
+  }
+  if ($historyEntries.Count -gt 0) {
+    Save-HistoryEntries -Root $OutputRoot_ -Entries $historyEntries
+  }
 
   Write-Host ''
   if ($failed.Count -gt 0) {
-    Write-Host "FAIL 有 $($failed.Count) 个场景未通过" -ForegroundColor Red
+    Write-Host '  有场景未通过，详细原因见上方提示与报告文件。' -ForegroundColor Red
     return 1
   }
-  Write-Host "PASS 验收通过（$status）" -ForegroundColor Green
+  Write-Host '  验收通过。' -ForegroundColor Green
   return 0
 }
 
@@ -1979,7 +2387,7 @@ try {
 } catch {
   Write-Host ''
   Write-Host "验收脚本异常退出：$($_.Exception.Message)" -ForegroundColor Red
-  Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+  Write-Verbose $_.ScriptStackTrace
   $exitCode = 1
 }
 
