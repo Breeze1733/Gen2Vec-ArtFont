@@ -1,8 +1,9 @@
-# 三条批量输入，分别命中三条路由链（分隔符 ` | `，与 acceptance.txt 一致）
-# 列：文本 | 风格提示词 | 负面提示词 | seed | resolution | 期望工作流 | 期望文本分类
+# Three batch inputs, each hitting one route chain (delimiter ` | `, same as acceptance.txt)
+# Columns: text | style prompt | negative prompt | seed | resolution | expected workflow | expected text profile
 #
-# 判定规则：只看汉字与拉丁字母，数字/标点/符号/空白不参与。
-#   期望文本分类（text_profile）只有 chinese / english / mixed 三种，与工作流名不是一回事。
+# Classification rule: only Han characters and Latin letters count; digits, punctuation,
+# symbols and whitespace are ignored.
+#   The expected text profile is only chinese / english / mixed, not the workflow name.
 青山集 | 青绿色水墨质感，金色细描边，搭配山形与竹叶装饰 |  | 0 | 1024 x 1024 | qwen_image_2512_gguf | chinese
 ICE CRUSH | frozen typography, cracked ice shards, translucent blue crystals, polar frost texture |  | 0 | 1024 x 1024 | flux_schnell | english
 咖啡 Latte 2.0 | 棕色咖啡质感，奶泡纹理，英文字母清晰 |  | 0 | 1024 x 1024 | test_z_image_turbo | mixed

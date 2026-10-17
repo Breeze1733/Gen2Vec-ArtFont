@@ -1,54 +1,54 @@
 ﻿<#
 .SYNOPSIS
-  端到端验收测试：单图矢量化 + 批量生成，可选 300 条完整套件。
+  End-to-end acceptance test: single-image vectorization + batch generation, plus an optional 300-row suite.
 
 .DESCRIPTION
-  默认跑两个场景（按钮点一下即自动开始，全程无需人工输入）：
+  By default it runs two scenarios (one click on the button starts everything; no input required):
 
-    1. 单图矢量化   「念奴娇」走完整链路：提示词合成 → 文生图 → 矢量化
-    2. 批量生成     3 条输入，分别命中 Qwen / Flux / Z-Image 三条路由链
+    1. Single-image vectorization: the fixed Chinese input runs the full chain (prompt synthesis -> txt2img -> vectorize)
+    2. Batch generation: 3 inputs hitting the Qwen, Flux and Z-Image route chains
 
-  加 -Full 再追加一段 300 条的批量套件（调用 gen2vec_cli.exe batch，
-  核验 batch_summary.csv 与每条任务的产物）。
+  Pass -Full to append the 300-row CLI batch suite (runs gen2vec_cli.exe batch
+  and verifies batch_summary.csv plus every task's artifacts).
 
-  生成类场景设有 ComfyUI 门禁：ComfyUI 未就绪时直接判失败，而不是让后端
-  静默回落到 Pillow 占位图——否则会出现「测试全绿但什么都没生成」。
+  Generation scenarios are guarded by a ComfyUI check: if ComfyUI is not ready the
+  run fails instead of letting the backend silently fall back to Pillow placeholders.
 
-  退出码：0 全部通过 / 1 有失败 / 2 环境不可用 / 3 参数错误
+  Exit codes: 0 all passed / 1 failures / 2 environment unavailable / 3 bad arguments
 
 .PARAMETER SkipBatch
-  只跑单图场景，跳过批量生成（省约 5-15 分钟）。
+  Run only the single-image scenario, skipping batch generation (saves ~5-15 minutes).
 
 .PARAMETER Full
-  追加 300 条完整批量套件（串行执行，耗时以小时计）。
+  Append the full 300-row batch suite (sequential; takes hours).
 
 .PARAMETER DryRun
-  只做前置检查并打印将要执行的请求，不真正调用后端。
+  Run the preflight checks and print the plan without calling any backend.
 
 .PARAMETER VerifyOnly
-  跳过所有场景，只核验一份已有的 batch_summary.csv。
+  Skip all scenarios and verify an existing batch_summary.csv instead.
 
 .PARAMETER OutputRoot
-  产物根目录。桌面端按钮会传入安装目录下的 outputs\，脚本把报告也写在这里，
-  并登记进 tasks-index.json，使验收记录出现在桌面端「历史任务」面板。
+  Output root. The desktop button passes <install dir>\outputs; reports are written
+  here too and registered in tasks-index.json so they appear in the desktop history panel.
 #>
 [CmdletBinding()]
 param(
-  # ── 场景选择 ──
+  # -- Scenario selection --
   [switch]$SkipBatch,
   [switch]$Full,
 
-  # ── 运行控制 ──
+  # -- Execution control --
   [switch]$DryRun,
   [string]$VerifyOnly = "",
   [int]$Wait = 30,
   [switch]$SkipHealth,
 
-  # ── 产物 ──
+  # -- Output --
   [string]$OutputRoot = "",
   [string]$ReportDir = "",
 
-  # ── 后端地址 ──
+  # -- Backend addresses --
   [string]$Txt2ImgBase = "http://127.0.0.1:9001",
   [string]$VectorizerBase = "http://127.0.0.1:8000",
   [string]$ComfyUiHost = "http://127.0.0.1:8188",
@@ -56,7 +56,7 @@ param(
   [int]$VectorTimeoutSec = 600,
   [int]$ComfyUiWaitSec = 300,
 
-  # ── 300 条套件参数（沿用旧脚本语义）──
+  # -- 300-row suite options (same semantics as the previous script) --
   [string]$CliPath = "",
   [string]$Resolution = "1664 x 928",
   [ValidateSet("clean", "balanced", "detailed", "ultra")]
@@ -72,30 +72,30 @@ param(
   [switch]$StrictSvgGroups
 )
 
-# 不要改 [Console]::OutputEncoding。老 conhost 在 UTF-8(65001) 代码页下对中文
-# 宽字符的宽度记账有 bug，会把每个汉字显示成两遍；保持系统默认代码页（中文 Windows
-# 通常是 936）显示才正常。报告文件用显式 UTF-8 读写，与控制台编码无关。
+# Do not change [Console]::OutputEncoding. Legacy conhost mis-accounts for wide
+# CJK glyph widths under the UTF-8 (65001) code page, printing every Chinese
+# character twice. The system default code page (usually 936) renders correctly.
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
 
 # ══════════════════════════════════════════════════════════════════════
-# 常量：复刻自 services/txt2img-api/app/generator.py，由 Test-ContractDrift 守卫
+# Constants mirrored from services/txt2img-api/app/generator.py, guarded by Test-ContractDrift
 # ══════════════════════════════════════════════════════════════════════
 
-# generator.py 里本地兜底（占位图）的 engine 名，出现即代表「没真跑 ComfyUI」
+# engine name used by generator.py's local placeholder fallback; seeing it means ComfyUI did not run
 $script:StubEngine = 'local-studio'
 
-# 场景一的固定输入
+# Fixed input for scenario 1
 $script:SingleText = '念奴娇'
 $script:SingleStyle = '三个中文艺术字，霸气狂草，黑白泼墨风格，红色飞扬线条勾勒，金戈铁马之感'
 
-# ComfyUI 工作流里产出 latent 的节点类型（generator.py 未导出，属实现细节约定）
+# Node types that produce latents in ComfyUI workflows (not exported by generator.py)
 $script:LatentClassTypes = @('EmptyLatentImage', 'EmptySD3LatentImage')
 
 function Get-ExpectedRouteChains {
-  # generator.py: _ROUTE_CHAINS（值取自 _CHINESE/_ENGLISH/_MIXED_FALLBACK）
+  # generator.py: _ROUTE_CHAINS (values come from _CHINESE/_ENGLISH/_MIXED_FALLBACK)
   return @{
     chinese = @('qwen_image_2512_gguf', 'test_z_image_turbo')
     english = @('flux_schnell', 'test_z_image_turbo')
@@ -109,18 +109,18 @@ function Get-ExpectedQwenResolutions {
 }
 
 function Get-ExpectedFluxResolutions {
-  # generator.py: _FLUX_RESOLUTIONS（所有边长均为 64 的整数倍）
+  # generator.py: _FLUX_RESOLUTIONS (all sides are multiples of 64)
   return @('1024x1024', '1344x768', '768x1344', '1152x896', '896x1152', '1216x832', '832x1216')
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 通用工具
+# General helpers
 # ══════════════════════════════════════════════════════════════════════
 
 function ConvertTo-DeepHashtable {
   <#
-    把 Invoke-RestMethod 产出的 PSCustomObject 递归转成 hashtable，
-    让下游取值逻辑只需处理一种形态。
+    Recursively convert the PSCustomObject produced by Invoke-RestMethod into a hashtable,
+    so downstream lookups only deal with one shape.
   #>
   param($InputObject)
 
@@ -148,7 +148,7 @@ function ConvertTo-DeepHashtable {
 }
 
 function Get-DeepValue {
-  <# 从 hashtable 或 PSCustomObject 取键；不存在时返回 $null，不抛错。 #>
+  <# Read a key from a hashtable or PSCustomObject; returns $null when absent, never throws. #>
   param($Object, [string]$Key)
 
   if ($null -eq $Object) { return $null }
@@ -164,7 +164,7 @@ function Get-DeepValue {
 }
 
 function Get-Snippet {
-  <# 截取响应正文的一小段用于报错详情，容忍 null 与非字符串。 #>
+  <# Take a short snippet of a response body for error details; tolerates null and non-strings. #>
   param($Text, [int]$MaxLength = 120)
 
   $value = [string]$Text
@@ -174,7 +174,7 @@ function Get-Snippet {
 }
 
 function ConvertTo-ResolutionKey {
-  <# 把 '1664 x 928' 或 @(1664,928) 统一成 '1664x928'，便于逐项比对。 #>
+  <# Normalize '1664 x 928' or @(1664,928) to '1664x928' for item-by-item comparison. #>
   param($Value)
 
   if ($null -eq $Value) { return '' }
@@ -187,15 +187,15 @@ function ConvertTo-ResolutionKey {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# fixture 解析
+# Fixture parsing
 # ══════════════════════════════════════════════════════════════════════
 
 function ConvertFrom-AcceptanceLine {
   <#
-    解析一行 `文本 | 风格提示词 | 负面提示词 | seed | resolution [| 更多列]`。
+    Parse one line: `text | style prompt | negative prompt | seed | resolution [| more columns]`.
 
-    空行与 `#` 注释返回 $null。兼容全角竖线、Tab 分隔与 BOM。
-    第 6 列起的字段落在 Extras（routes.txt 用它携带期望工作流与文本分类）。
+    Blank lines and `#` comments return $null. Handles full-width pipes, tabs and BOM.
+    Fields from column 6 on go into Extras (routes.txt uses them for expected workflow/profile).
   #>
   param([string]$Line)
 
@@ -235,11 +235,11 @@ function ConvertFrom-AcceptanceLine {
 
 function Resolve-FixturePath {
   <#
-    定位 fixture 文件。
+    Locate a fixture file.
 
-    打包后 fixture 可能落在 tests\fixtures\，也可能被摊平到 tests\（见
-    apps/desktop/package.json 的 extraResources），两处都找，避免出现
-    「文件明明在安装目录里，脚本却说找不到」。
+    In a packaged build a fixture may live in tests\fixtures\ or be flattened into
+    tests\ (see extraResources in apps/desktop/package.json). Check both locations
+    so a file that is present is never reported as missing.
   #>
   param(
     [Parameter(Mandatory = $true)][string]$Name,
@@ -260,8 +260,8 @@ function Resolve-FixturePath {
 
 function Read-RoutesFixture {
   <#
-    读 routes.txt：每行 = 5 列输入 + 期望工作流 + 期望文本分类。
-    seed 缺省 '0'，resolution 缺省 '1024 x 1024'。
+    Read routes.txt: 5 input columns + expected workflow + expected text profile.
+    seed defaults to '0' and resolution to '1024 x 1024'.
   #>
   param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -288,14 +288,14 @@ function Read-RoutesFixture {
 }
 
 function Read-GeneratorConstants {
-  <# 从 generator.py 源码解析出路由链与分辨率表，供漂移比对。 #>
+  <# Parse route chains and resolution tables from generator.py for drift comparison. #>
   param([Parameter(Mandatory = $true)][string]$Path)
 
   if (-not (Test-Path -LiteralPath $Path)) { throw "generator.py 不存在：$Path" }
 
   $src = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
 
-  # _CHINESE_FALLBACK = ["a", "b"] 等三条降级链
+  # Three fallback chains such as _CHINESE_FALLBACK = ["a", "b"]
   $fallbacks = @{}
   foreach ($m in [regex]::Matches($src, '_(CHINESE|ENGLISH|MIXED)_FALLBACK\s*=\s*\[(.*?)\]', 'Singleline')) {
     $chainName = $m.Groups[1].Value.ToLowerInvariant()
@@ -325,8 +325,8 @@ function Read-GeneratorConstants {
     $resolutions[$name] = ($pairs -join ',')
   }
 
-  # stub engine 只在 _local_stub_generate 里取。
-  # 全文件搜 `"engine": "..."` 会命中真实 ComfyUI 路径（generator.py 里出现更早）。
+  # Read the stub engine name only from _local_stub_generate.
+  # Searching the whole file matches the real ComfyUI path first (it appears earlier).
   $stubFn = [regex]::Match($src, 'def _local_stub_generate\(.*?(?=\ndef |\Z)', 'Singleline')
   $stubMatch = if ($stubFn.Success) { [regex]::Match($stubFn.Value, '"engine"\s*:\s*"([^"]+)"') } else { $null }
 
@@ -340,10 +340,10 @@ function Read-GeneratorConstants {
 
 function Test-ContractDrift {
   <#
-    比对脚本内复刻的常量与 generator.py 实际值，返回漂移描述数组（空 = 无漂移）。
-
-    漂移只在报告里记 WARN，不判失败——真正的判定靠运行期的
-    workflow_used 断言，那是更强的信号。
+    Compare mirrored constants with the real values in generator.py; returns drift
+    messages (empty array = no drift).
+    Drift is recorded as a WARN in the report, not a failure: the runtime
+    workflow_used assertions are the stronger signal.
   #>
   param(
     [Parameter(Mandatory = $true)][string]$GeneratorPath,
@@ -383,18 +383,18 @@ function Test-ContractDrift {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 响应与产物断言
+# Response and artifact assertions
 # ══════════════════════════════════════════════════════════════════════
 
 function Get-StubReasons {
   <#
-    返回「这是占位图产物」的证据列表；空列表表示确实走了 ComfyUI。
+    Return evidence that this is a placeholder artifact; an empty list means ComfyUI did run.
 
-    这是整套验收最关键的一道防线：ComfyUI 不可用时后端会静默回落到 Pillow
-    占位图并照常返回 200，不拦就会「所有断言全绿但什么都没生成」。
+    This is the most important guard: when ComfyUI is unavailable the backend
+    silently returns a Pillow placeholder with HTTP 200, so every assert would pass.
   #>
   param(
-    # 不设 Mandatory：空 hashtable 也是合法输入（会被判为 stub）
+    # No Mandatory: an empty hashtable is valid input (it is judged as a stub)
     [hashtable]$Metadata,
     [hashtable]$Payload = $null
   )
@@ -425,8 +425,8 @@ function Get-StubReasons {
 
   if ($null -ne $Payload) {
     $api = Get-DeepValue $Payload 'workflow_api'
-    # 注意：@($api).Count 对空 hashtable 会算出 1（把一个空表包成了单元素数组），
-    # 必须按类型分别判空。
+    # Note: @($api).Count is 1 for an empty hashtable (it wraps it in a one-element array),
+    # so emptiness must be checked per type.
     $apiEmpty = $null -eq $api
     if (-not $apiEmpty -and $api -is [System.Collections.IDictionary]) { $apiEmpty = ($api.Count -eq 0) }
     if (-not $apiEmpty -and $api -is [System.Collections.IEnumerable] -and $api -isnot [string]) {
@@ -439,7 +439,7 @@ function Get-StubReasons {
 }
 
 function Get-LatentSize {
-  <# 从 workflow_api 里找 latent 节点，返回 @(宽,高)；找不到返回 $null。 #>
+  <# Find the latent node in workflow_api and return @(width,height); $null if absent. #>
   param($WorkflowApi)
 
   if ($null -eq $WorkflowApi) { return $null }
@@ -460,7 +460,7 @@ function Get-LatentSize {
 }
 
 function Get-DataUrlPngSize {
-  <# 从 data URL（或裸 base64）读 PNG 宽高，只解文件头，不依赖图像库。 #>
+  <# Read PNG width/height from a data URL (or raw base64); header only, no image library. #>
   param([Parameter(Mandatory = $true)][string]$DataUrl)
 
   $payload = $DataUrl
@@ -484,8 +484,8 @@ function Get-DataUrlPngSize {
 
 function Test-SvgStructure {
   <#
-    纯结构校验（不渲染）：XML 可解析、有 <svg> 根、viewBox 有效、
-    含真实矢量元素、且不含 <image> 或 base64 位图伪装。
+    Pure structural check (no rendering): XML parses, <svg> root, valid viewBox,
+    real vector elements present, and no <image> or base64 bitmap disguise.
   #>
   param([Parameter(Mandatory = $true)][string]$SvgText)
 
@@ -531,16 +531,16 @@ function Test-SvgStructure {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 结果收集
+# Result collection
 # ══════════════════════════════════════════════════════════════════════
 
 function Test-DetailedOutput {
-  <# -Verbose 时才输出技术细节；默认只给面向用户的信息。 #>
+  <# Technical details only under -Verbose; user-facing information by default. #>
   return ($VerbosePreference -ne 'SilentlyContinue')
 }
 
 function Format-Duration {
-  <# 秒数转成人能读的时长：42 秒 / 1 分 35 秒 / 1 小时 12 分。 #>
+  <# Turn seconds into a readable duration, e.g. 42 s / 1 min 35 s / 1 h 12 min. #>
   param([double]$Seconds)
 
   $total = [int][Math]::Round($Seconds)
@@ -560,7 +560,7 @@ function Format-Duration {
 }
 
 function Format-ServiceName {
-  <# 内部服务名转成用户能理解的名字。 #>
+  <# Map internal service names to names users understand. #>
   param([string]$Name)
 
   switch -Regex ($Name) {
@@ -578,13 +578,13 @@ function Write-Stage {
 }
 
 function Write-Note {
-  <# 缩进的进度提示，例如「正在生成图片…（已等待 15 秒）」。 #>
+  <# Indented progress note, e.g. "generating image... (waited 15 s)". #>
   param([string]$Text)
   Write-Host "      $Text" -ForegroundColor DarkGray
 }
 
 function Write-Outcome {
-  <# 面向用户的结论行：通过 / 失败 / 警告 / 跳过。 #>
+  <# User-facing outcome line: passed / failed / warning / skipped. #>
   param(
     [ValidateSet('通过', '失败', '警告', '跳过')][string]$Status,
     [string]$Text,
@@ -610,17 +610,17 @@ function New-ScenarioResult {
     Artifacts = (New-Object System.Collections.ArrayList)
     Elapsed   = 0.0
     Error     = ''
-    # 供历史索引使用的结构化信息（产物路径、输入、耗时），由场景函数填充
+    # Structured data for the history index (artifact paths, inputs, timings)
     Data      = @{}
   }
 }
 
 function Add-Check {
   <#
-    记录一条断言。
+    Record one assertion.
 
-    默认只在出问题时打印（FAIL / WARN），避免几十行绿色 PASS 淹没进度；
-    -Verbose 时逐条打印，保留完整技术细节。报告文件始终记录全部检查项。
+    By default it prints only on failure (FAIL/WARN) so dozens of green PASS lines
+    do not bury the progress. -Verbose prints every check; the report always records all of them.
   #>
   param(
     [Parameter(Mandatory = $true)]$Result,
@@ -628,7 +628,7 @@ function Add-Check {
     [Parameter(Mandatory = $true)][string]$Label,
     [string]$Detail = '',
     [switch]$WarnOnly,
-    # 面向用户的说法；默认输出失败时用它替代 Label + Detail（技术原因仍进报告）
+    # User-facing wording; replaces Label + Detail on failure (technical reason still goes to the report)
     [string]$DisplayText = ''
   )
 
@@ -658,10 +658,10 @@ function Add-Check {
 
 function Invoke-JsonPost {
   <#
-    POST JSON 并返回 @{ Status; Json; Text; Ok; ElapsedSec }。
+    POST JSON and return @{ Status; Json; Text; Ok; ElapsedSec }.
 
-    单次生图要 91-285 秒，安静等待会让用户以为脚本卡死，所以把请求丢到
-    独立 runspace 执行，主线程每 15 秒打印一次已等待秒数。
+    A single generation takes 91-285 seconds; silence looks like a hang, so the request
+    runs in a separate runspace while the main thread prints the wait time every 15 s.
   #>
   param(
     [Parameter(Mandatory = $true)][string]$Url,
@@ -736,10 +736,10 @@ function Invoke-JsonPost {
 }
 
 function Test-HttpReady {
-  <# 探测 GET 是否返回 200；用于后端 /healthz 与 ComfyUI /system_stats。 #>
+  <# Probe whether a GET returns 200; used for backend /healthz and ComfyUI /system_stats. #>
   param([Parameter(Mandatory = $true)][string]$Url, [int]$TimeoutSec = 3)
 
-  # 脚本自己的 -Verbose 不应把 Invoke-WebRequest 的内部日志一并带出来
+  # The script's -Verbose must not leak Invoke-WebRequest's internal verbose logs
   $VerbosePreference = 'SilentlyContinue'
   try {
     $resp = Invoke-WebRequest -Uri $Url -Method GET -TimeoutSec $TimeoutSec -UseBasicParsing
@@ -750,14 +750,14 @@ function Test-HttpReady {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 环境门禁
+# Environment checks
 # ══════════════════════════════════════════════════════════════════════
 
 function Wait-BackendReady {
   <#
-    等后端 /healthz 就绪。桌面端启动时会自动拉起后端，按钮路径通常秒过。
+    Wait for backend /healthz. The desktop starts backends itself, so the button path is fast.
 
-    只在「正在等待」时输出进度；成功与否由调用方统一打印面向用户的结论。
+    Print progress only while waiting; the caller prints the final user-facing outcome.
   #>
   param([string]$Base, [string]$Name, [int]$Seconds)
 
@@ -785,8 +785,8 @@ function Wait-BackendReady {
 
 function Test-ComfyUiGate {
   <#
-    生成场景的前置门禁。ComfyUI 没起就拒绝跑——否则后端静默回落占位图，
-    验收会假通过。冷启动可能 1-3 分钟，这里等满 ComfyUiWaitSec 秒。
+    Pre-check for generation scenarios. Refuse to run without ComfyUI, otherwise the
+    backend silently falls back to placeholders and the run passes falsely. Cold start can take 1-3 min.
   #>
   param($Result, [string]$Host_, [int]$TimeoutSec)
 
@@ -817,7 +817,7 @@ function Test-ComfyUiGate {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 场景一：单图矢量化
+# Scenario 1: single-image vectorization
 # ══════════════════════════════════════════════════════════════════════
 
 function Invoke-SingleScenario {
@@ -858,7 +858,7 @@ function Invoke-SingleScenario {
   $meta = Get-DeepValue $payload 'metadata'
   if ($null -eq $meta) { $meta = @{} }
 
-  # 必须真走 ComfyUI —— 这是防「静默回落占位图导致假通过」的核心
+  # Must really run ComfyUI: this is the core guard against a silent placeholder fallback
   $reasons = @(Get-StubReasons -Metadata $meta -Payload $payload)
   $evidence = if ($reasons.Count -eq 0) {
     "engine=$(Get-DeepValue $meta 'engine') tier=$(Get-DeepValue $meta 'fallback_tier') workflow=$(Get-DeepValue $meta 'workflow_used')"
@@ -879,13 +879,13 @@ function Invoke-SingleScenario {
     '文本分类为 chinese' "text_profile=$(Get-DeepValue $syn 'text_profile')" `
     -DisplayText '文本分类异常'
 
-  # 请求 1024x1024，Qwen 会按宽高比吸附到官方尺寸
+  # Request 1024x1024; Qwen snaps to its official size by aspect ratio
   $latent = Get-LatentSize -WorkflowApi (Get-DeepValue $payload 'workflow_api')
   $latentText = if ($null -eq $latent) { '<未找到 latent 节点>' } else { "$($latent[0])x$($latent[1])" }
   Add-Check $result ($null -ne $latent -and $latent[0] -eq 1328 -and $latent[1] -eq 1328) `
     'qwen 分辨率映射 1024x1024 -> 1328x1328' $latentText -DisplayText '生成尺寸与预期不符'
 
-  # ── 产物落盘 ──
+  # -- Save artifacts --
   $pngPath = Join-Path $outDir 'original.png'
   $imageBase64 = [string](Get-DeepValue $payload 'image_base64')
   if ([string]::IsNullOrWhiteSpace($imageBase64)) {
@@ -920,8 +920,8 @@ function Invoke-SingleScenario {
     $pngTransparency = $vec.PngTransparency
   }
 
-  # ── 写 metadata.json / run.log，并准备历史索引数据 ──
-  # 历史面板恢复记录时按 paths 重新读盘，所以这里必须落齐四件套 + metadata。
+  # -- Write metadata.json / run.log and prepare history-index data --
+  # The history panel re-reads files from paths, so all four artifacts plus metadata are required.
   if (Test-Path -LiteralPath $pngPath) {
     $itemStatus = if ($result.Status -eq 'FAIL') { 'failed' } else { 'success' }
     Write-TaskMetadataFile -OutDir $outDir -GenerationMeta $meta `
@@ -964,16 +964,16 @@ function Invoke-SingleScenario {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 矢量化（单图与批量共用）
+# Vectorization (shared by single and batch)
 # ══════════════════════════════════════════════════════════════════════
 
 function Write-TaskMetadataFile {
   <#
-    写任务目录的 metadata.json 与 run.log。
+    Write metadata.json and run.log for a task directory.
 
-    桌面端「历史任务」恢复一条记录时会读这两个文件：metadata 提供输入、
-    耗时与质量分，run.log 提供分阶段耗时。字段形状对齐正常任务写出的结构，
-    这样验收产物在历史面板里和普通结果表现一致。
+    The desktop history panel reads both files when restoring an entry: metadata supplies
+    inputs, timings and quality scores; run.log supplies per-stage timings. The shape
+    matches normal tasks so acceptance artifacts behave like ordinary results.
   #>
   param(
     [string]$OutDir,
@@ -1008,15 +1008,15 @@ function Write-TaskMetadataFile {
 
 function Invoke-Vectorize {
   <#
-    调用 vectorizer 并把 transparent.png / preview.png / result.svg 落盘。
-    返回一个只含 Checks/Artifacts 的轻量结果，由调用方并入自己的场景结果。
+    Call the vectorizer and save transparent.png / preview.png / result.svg.
+    Returns a light result with Checks/Artifacts that the caller merges into its own scenario.
   #>
   param($Ctx, [string]$PngPath, [string]$ImageName, [string]$OutDir, [string]$Tag)
 
   $sub = [PSCustomObject]@{
     Checks          = (New-Object System.Collections.ArrayList)
     Artifacts       = (New-Object System.Collections.ArrayList)
-    # 写历史索引时需要：耗时与质量分
+    # Needed for the history index: timings and quality scores
     ElapsedSec      = 0.0
     SvgFidelity     = $null
     PngTransparency = $null
@@ -1088,7 +1088,7 @@ function Invoke-Vectorize {
       })
   }
 
-  # SVG 结构校验：SVG 场景不单独跑，并入这里
+  # SVG structural check: no separate scenario, folded in here
   $structure = Test-SvgStructure -SvgText $svg
   [void]$sub.Checks.Add([PSCustomObject]@{
       Label   = "$Tag · SVG 结构合法"
@@ -1121,7 +1121,7 @@ function Invoke-Vectorize {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 场景二：批量生成（3 条，三条路由链全命中）
+# Scenario 2: batch generation (3 inputs covering all three route chains)
 # ══════════════════════════════════════════════════════════════════════
 
 function Invoke-BatchScenario {
@@ -1143,9 +1143,9 @@ function Invoke-BatchScenario {
     return $result
   }
 
-  # 逐条产物记录：供桌面端「历史任务」的批量条目使用
+  # Per-item artifact records used by the desktop batch history entry
   $itemRecords = New-Object System.Collections.ArrayList
-  # 回填到表单的批量输入（文本 | 提示词 | 负面 | seed | 分辨率）
+  # Batch input to restore into the form (text | prompt | negative | seed | resolution)
   $batchInputLines = @()
 
   for ($i = 0; $i -lt $rows.Count; $i++) {
@@ -1195,7 +1195,7 @@ function Invoke-BatchScenario {
     Add-Check $result ($got -eq $expectedWorkflow) "#$index $text · workflow_used == $expectedWorkflow" "实际 $got" `
       -DisplayText "#$index $text · 生成引擎选择异常"
 
-    # text_profile 是「文本分类」（chinese/english/mixed），不是渲染模板名
+    # text_profile is the text classification (chinese/english/mixed), not a render template name
     $textProfile = Get-DeepValue (Get-DeepValue $meta 'prompt_synthesis') 'text_profile'
     Add-Check $result ($textProfile -eq $row.ExpectedProfile) "#$index $text · 文本分类 == $($row.ExpectedProfile)" "实际 $textProfile" `
       -DisplayText "#$index $text · 文本分类异常"
@@ -1234,7 +1234,7 @@ function Invoke-BatchScenario {
     }
     foreach ($artifact in $vec.Artifacts) { [void]$result.Artifacts.Add($artifact) }
 
-    # ── 落 metadata / run.log，并登记这条产物 ──
+    # -- Write metadata / run.log and register this artifact --
     $vectorMs = [int]($vec.ElapsedSec * 1000)
     $hasSvg = Test-Path -LiteralPath (Join-Path $outDir 'result.svg')
     $itemStatus = if ($hasSvg) { 'success' } else { 'failed' }
@@ -1286,7 +1286,7 @@ function Invoke-BatchScenario {
     }
   }
 
-  # 批量条目：历史面板点开后可在结果区逐条切换查看
+  # Batch entry: the history panel can switch through items in the result view
   if ($itemRecords.Count -gt 0) {
     $result.Data = @{
       Kind       = 'batch'
@@ -1305,7 +1305,7 @@ function Invoke-BatchScenario {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 300 条完整套件（-Full 时追加；以下为原 run-acceptance.ps1 的核验机器）
+# Full 300-row suite (appended by -Full; verification machinery from the previous script)
 # ══════════════════════════════════════════════════════════════════════
 
 function Resolve-AbsolutePath {
@@ -1353,7 +1353,7 @@ function Test-LiteralPathExists {
 }
 
 function New-PreparedFixture {
-  <# 把 fixture 规范化成 CLI 支持的 `文本 | 提示词 | 负面 | seed | resolution` 五列文本。 #>
+  <# Normalize a fixture into the CLI's five-column `text | prompt | negative | seed | resolution` format. #>
   param(
     [string]$FixturePath,
     [string]$PreparedPath,
@@ -1481,7 +1481,7 @@ function Add-ResolutionFinding {
 
   if (-not $Resolution -or (Test-SizeEquals $Png $Resolution)) { return }
 
-  # Qwen 会把请求尺寸吸附到官方尺寸，属预期行为，记通过
+  # Qwen snaps the requested size to an official size; expected, so count it as a pass
   $mapped = Get-QwenMappedResolution $Resolution
   if ($mapped -and (Test-SizeEquals $Png $mapped)) { return }
   if ($AllowResolutionMismatch) { return }
@@ -1514,7 +1514,7 @@ function Add-Failure {
 }
 
 function Test-AcceptanceArtifacts {
-  <# 核验 300 条套件的 batch_summary.csv 与每条任务的产物。 #>
+  <# Verify batch_summary.csv and every task's artifacts for the 300-row suite. #>
   param(
     [string]$SummaryPath,
     [array]$ExpectedRows,
@@ -1669,7 +1669,7 @@ function Test-AcceptanceArtifacts {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 历史索引（让验收记录出现在桌面端「历史任务」面板）
+# History index (makes acceptance runs appear in the desktop history panel)
 # ══════════════════════════════════════════════════════════════════════
 
 function Read-JsonArrayFile {
@@ -1706,10 +1706,10 @@ function Get-HistoryId {
 
 function New-SingleHistoryEntry {
   <#
-    为单图场景构造一条桌面端可恢复的历史条目。
+    Build a desktop-restorable history entry for the single-image scenario.
 
-    mode='single' 时，桌面端按 paths.original/transparent/preview/svg/metadata
-    直接读盘展示，所以 paths 必须指向真实产物，而不是报告文件。
+    With mode='single' the desktop reads paths.original/transparent/preview/svg/metadata
+    directly from disk, so paths must point at real artifacts, not at report files.
   #>
   param($Data, [string]$Root)
 
@@ -1744,9 +1744,9 @@ function New-SingleHistoryEntry {
 
 function New-BatchHistoryEntry {
   <#
-    为批量场景构造一条历史条目。
+    Build a history entry for the batch scenario.
 
-    每条产物放进 batchItems，桌面端点开后可逐条切换查看——与普通批量任务一致。
+    Each artifact goes into batchItems; the desktop can switch through them like a normal batch task.
   #>
   param($Data, [string]$Root)
 
@@ -1785,10 +1785,10 @@ function New-BatchHistoryEntry {
 
 function Save-HistoryEntries {
   <#
-    把若干条目合并进 outputs\tasks-index.json。
+    Merge entries into outputs\tasks-index.json.
 
-    按 id 或 taskDir 覆盖同一条记录；同时清掉旧版本写入的 mode='acceptance'
-    聚合条目——那些条目的 paths 指向报告文件，点开恢复不出任何图形。
+    Replace records by id or taskDir, and drop legacy mode='acceptance' entries
+    written by older versions: their paths pointed at report files and restored no images.
   #>
   param([string]$Root, [array]$Entries)
 
@@ -1934,7 +1934,7 @@ function Sync-AcceptanceHistoryIndex {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 300 条套件的编排
+# 300-row suite orchestration
 # ══════════════════════════════════════════════════════════════════════
 
 function Get-AcceptanceSuiteConfig {
@@ -1954,7 +1954,7 @@ function Get-AcceptanceSuiteConfig {
 }
 
 function Invoke-FullSuite {
-  <# 跑 300 条 CLI 批量套件并核验产物；返回 PSCustomObject(场景结果)。 #>
+  <# Run the 300-row CLI batch suite and verify artifacts; returns a scenario result object. #>
   param($Ctx, [string]$OutputRoot_)
 
   $result = New-ScenarioResult -Name "300 条完整套件（$($Ctx.SuiteFixture)）"
@@ -2038,7 +2038,7 @@ function Invoke-FullSuite {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 报告
+# Report
 # ══════════════════════════════════════════════════════════════════════
 
 function Write-AcceptanceReport {
@@ -2092,8 +2092,8 @@ function Write-AcceptanceReport {
     [void]$lines.Add('')
   }
 
-  # report.txt 是给人双击打开看的，带 BOM 以免中文 Windows 记事本猜成 GBK 显示乱码。
-  # report.json / tasks-index.json 保持无 BOM，与 CLI 既有写法一致（桌面端按 UTF-8 读）。
+  # report.txt is opened by humans: keep the BOM so Chinese Windows Notepad does not guess GBK.
+  # report.json / tasks-index.json stay BOM-less like the CLI writes them (the desktop reads UTF-8).
   $txtPath = Join-Path $ReportDir_ 'report.txt'
   [System.IO.File]::WriteAllLines($txtPath, $lines, (New-Object System.Text.UTF8Encoding($true)))
 
@@ -2101,7 +2101,7 @@ function Write-AcceptanceReport {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 主流程
+# Main flow
 # ══════════════════════════════════════════════════════════════════════
 
 function Invoke-AcceptanceMain {
@@ -2118,7 +2118,7 @@ function Invoke-AcceptanceMain {
   Write-Host ' 验收测试' -ForegroundColor Cyan
   Write-Host '============================================================' -ForegroundColor Cyan
 
-  # ── 契约漂移守卫（只 WARN，不判失败）──
+  # -- Contract drift guard (WARN only, never fails the run) --
   $drift = @()
   try {
     $drift = @(Test-ContractDrift -GeneratorPath (Join-Path $RepoRoot 'services\txt2img-api\app\generator.py') `
@@ -2128,12 +2128,12 @@ function Invoke-AcceptanceMain {
   } catch {
     $drift = @("跳过常量漂移检查：$($_.Exception.Message)")
   }
-  # 常量漂移属于内部校验，默认不打扰用户（仍完整写入报告）
+  # Drift is an internal check; keep it quiet by default but always write it to the report
   if (Test-DetailedOutput) {
     foreach ($item in $drift) { Write-Host "  [警告] $item" -ForegroundColor Yellow }
   }
 
-  # ── VerifyOnly：只核验已存在的汇总表 ──
+  # -- VerifyOnly: verify an existing summary file only --
   if (-not [string]::IsNullOrWhiteSpace($VerifyOnly)) {
     $summaryPath = Resolve-AbsolutePath $VerifyOnly
     if (-not (Test-LiteralPathExists $summaryPath)) { throw "batch_summary.csv does not exist: $summaryPath" }
@@ -2155,13 +2155,13 @@ function Invoke-AcceptanceMain {
     return 1
   }
 
-  # ── 环境门禁 ──
-  # dry-run 只做一次快速探测并如实报告，不会为了等后端而空转，也不因未就绪而退出。
+  # -- Environment checks --
+  # Dry-run probes once and reports honestly: no waiting and no early exit when not ready.
   if (-not $SkipHealth) {
     Write-Host ''
     Write-Host '检查运行环境…' -ForegroundColor Cyan
     if ($DryRun) {
-      # dry-run 只做一次快速探测，不为等后端而空转
+      # Dry-run probes once and never waits for backends
       $txtOk = Test-HttpReady -Url "$Txt2ImgBase_/healthz" -TimeoutSec 3
       $vecOk = Test-HttpReady -Url "$VectorizerBase_/healthz" -TimeoutSec 3
       $comfyOk = Test-HttpReady -Url "$ComfyUiHost_/system_stats" -TimeoutSec 5
@@ -2175,7 +2175,7 @@ function Invoke-AcceptanceMain {
       $vecOk = Wait-BackendReady -Base $VectorizerBase_ -Name 'vectorizer-api' -Seconds $Wait
       if ($vecOk) { Write-Outcome 通过 '矢量化服务已就绪' } else { Write-Outcome 失败 '矢量化服务未启动' }
 
-      # 绘图引擎由图像生成服务按需拉起，这里只报告状态，不阻塞
+      # The image service starts ComfyUI on demand; report status without blocking
       $comfyOk = Test-HttpReady -Url "$ComfyUiHost_/system_stats" -TimeoutSec 5
       if ($comfyOk) { Write-Outcome 通过 '绘图引擎已就绪' }
       else { Write-Host '  [提示] 绘图引擎将在生成时启动' -ForegroundColor DarkGray }
@@ -2225,7 +2225,7 @@ function Invoke-AcceptanceMain {
     return 0
   }
 
-  # ── 跑场景 ──
+  # -- Run scenarios --
   $ctx = [PSCustomObject]@{
     Txt2ImgBase     = $Txt2ImgBase_
     VectorizerBase  = $VectorizerBase_
@@ -2296,7 +2296,7 @@ function Invoke-AcceptanceMain {
     }
   }
 
-  # ── 汇总 ──
+  # -- Summary --
   $totalSeconds = $started.Elapsed.TotalSeconds
   $failed = @($results | Where-Object { $_.Status -eq 'FAIL' })
   $warned = @($results | Where-Object { $_.Status -eq 'WARN' })
@@ -2331,7 +2331,7 @@ function Invoke-AcceptanceMain {
     foreach ($item in $drift) { Write-Host "  [警告] $item" -ForegroundColor Yellow }
   }
 
-  # ── 报告 + 历史索引 ──
+  # -- Report + history index --
   $report = Write-AcceptanceReport -ReportDir_ $ReportDir_ -Results $results -Drift $drift -TotalSeconds $totalSeconds -Status $status
   Write-Host ''
   Write-Host '  结果已保存到：'
@@ -2343,8 +2343,8 @@ function Invoke-AcceptanceMain {
     Write-Host '  可在桌面端「历史任务」中查看。'
   }
 
-  # 每个场景单独登记一条，桌面端「历史任务」点开后按 paths 读盘展示真实产物。
-  # 不再写聚合条目：那种条目只能指向报告文件，点开恢复不出任何图形。
+  # One entry per scenario; the desktop reads paths from disk to show the real artifacts.
+  # No aggregate entry: it could only point at report files and would restore no images.
   $historyEntries = @()
   if ($single.Data -and $single.Data.TaskDir -and $single.Data.Paths) {
     $historyEntries += New-SingleHistoryEntry -Data $single.Data -Root $OutputRoot_
@@ -2365,10 +2365,10 @@ function Invoke-AcceptanceMain {
   return 0
 }
 
-# 被测试脚本 dot-source 时只加载上面的函数，不触发主流程。
+# When dot-sourced by tests, load functions only and do not run the main flow.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
-# ── 入口：解析路径后交给主流程 ──
+# -- Entry point: resolve paths and hand over to the main flow --
 $effectiveOutputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
   Join-Path $RepoRoot 'outputs'
 } else {
