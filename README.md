@@ -173,7 +173,7 @@ cd apps/desktop && npm install && npm run electron:build
 | 文生图 | ComfyUI, Flux Schnell, Z-Image Turbo, Qwen-Image |
 | 图像处理 | Pillow, OpenCV, scikit-image |
 | 背景移除 | rembg, ONNX Runtime |
-| 矢量化 | vtracer, svgwrite, cairosvg |
+| 矢量化 | vtracer, svgwrite, resvg-py |
 | 打包 | electron-builder, PyInstaller |
 
 ---

@@ -7,7 +7,7 @@
 - **日常使用** → 启动桌面端 GUI，使用图形界面操作。
 - **评审验收 / 批量测试 / 脚本自动化** → 使用 CLI。
 
-CLI 假设后端（txt2img-api + vectorizer-api）已经由桌面端启动完毕，不参与后端生命周期管理。
+CLI 不负责启动后端（txt2img-api + vectorizer-api）：使用前需由桌面端或手动启动。`shutdown` 命令仅用于主动关闭已运行的后端。
 
 ---
 
@@ -18,11 +18,11 @@ CLI 假设后端（txt2img-api + vectorizer-api）已经由桌面端启动完毕
 安装桌面端后，在安装目录下直接运行：
 
 ```powershell
-cd "C:\Program Files\矢量艺术字生成器"
+cd "$env:LOCALAPPDATA\Programs\矢量艺术字生成器"
 .\gen2vec_cli.exe <command> [options]
 ```
 
-**此时桌面端已在后台自动启动后端**，CLI 零等待直接执行。
+若安装时选择了「为所有用户安装」或自定义目录，请替换为实际安装路径。**此时桌面端已在后台自动启动后端**，CLI 零等待直接执行。
 
 ### 方式 2：源码直接运行（开发调试用）
 
@@ -174,7 +174,7 @@ CLI 与桌面端使用相同的产物目录结构，两者可以共用、互查�
 
 ```text
 outputs/
-├── task_YYYYMMDD_HHMMSS_xxx/
+├── task_YYYYMMDD_HHMMSS_mmm_<拼音slug>_seed-<seed>/
 │   ├─ original.png            # 文生图原始位图
 │   ├─ transparent.png         # 透明背景 PNG
 │   ├─ result.svg              # 标准 SVG 矢量图
@@ -185,7 +185,7 @@ outputs/
 │       ├─ workflow_api.json
 │       ├─ nodes.md
 │       └─ model_dependencies.json
-├── task_YYYYMMDD_HHMMSS_xxx/
+├── task_YYYYMMDD_HHMMSS_mmm_<拼音slug>_seed-<seed>/
 │   └── ...
 └── batch_summary.csv          # 批量模式汇总（如有）
 ```
@@ -205,9 +205,9 @@ outputs/
 
 ## 矢量化预设
 
-| 预设 | 颜色精度 | 去噪强度 | 角点阈值 | 长度阈值 | 图层差异 | 缩放 |
+| 预设 | 颜色精度 | 斑点过滤 | 拐角阈值 | 长度阈值 | 图层差异 | 缩放 |
 |------|:--------:|:--------:|:--------:|:--------:|:--------:|:----:|
-| `clean` | 2 | 48 | 120 | 30 | 38 | 2 |
-| `balanced` | 4 | 18 | 70 | 12 | 20 | 2 |
-| `detailed` | 6 | 2 | 30 | 3 | 4 | 3 |
-| `ultra` | 8 | 1 | 20 | 2 | 2 | 3 |
+| `clean` | 4 | 24 | 90 | 16 | 28 | 1 |
+| `balanced` | 6 | 10 | 60 | 8 | 16 | 2 |
+| `detailed` | 7 | 4 | 45 | 5 | 12 | 2 |
+| `ultra` | 8 | 2 | 30 | 3 | 8 | 2 |
