@@ -64,7 +64,7 @@
 | 文生图服务 | [`services/txt2img-api`](services/txt2img-api/README.md) | ComfyUI 工作流加载、提示词注入、生成图片、降级策略 |
 | 矢量化服务 | [`services/vectorizer-api`](services/vectorizer-api/README.md) | 图片来源解析、背景移除、预处理、SVG 生成、质量指标 |
 | 测试集 | `tests/` | 验收测试脚本与夹具 |
-| 文档 | `docs/` | 安装部署、算法原理、交付清单等 |
+| 文档 | `docs/` | 安装部署、参数配置、算法原理、模型依赖等 |
 
 ---
 
@@ -187,6 +187,6 @@ cd apps/desktop && npm install && npm run electron:build
 | [`docs/算法原理说明.md`](docs/算法原理说明.md) | 文生图与矢量化核心算法公式 |
 | [`docs/模型与节点依赖清单.md`](docs/模型与节点依赖清单.md) | ComfyUI 模型与自定义节点清单 |
 | [`docs/安装部署说明.md`](docs/安装部署说明.md) | 完整安装步骤与排错 |
-| [`docs/交付清单.md`](docs/交付清单.md) | 项目交付物说明 |
+| [`交付物清单.md`](交付物清单.md) | 赛题要求与实际交付物的对照表 |
 
 ---
