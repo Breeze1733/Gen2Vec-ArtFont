@@ -1,0 +1,95 @@
+{
+    "generation":  {
+                       "duration_ms":  109017,
+                       "seed":  0,
+                       "prompt":  "青绿色水墨质感，金色细描边，搭配山形与竹叶装饰",
+                       "text":  "青山集",
+                       "resolution":  "1024 x 1024"
+                   },
+    "comfyui_prompt_id":  "9683d7a8-67ea-43a3-87bb-d96cc64510a5",
+    "workflow_used":  "qwen_image_2512_gguf",
+    "resolution":  "1024x1024",
+    "preprocess":  {
+                       "png_transparency":  91.2
+                   },
+    "seed":  0,
+    "negative_prompt":  "",
+    "prompt_synthesis":  {
+                             "section_order":  [
+                                                   "background",
+                                                   "style",
+                                                   "layout",
+                                                   "content",
+                                                   "accuracy",
+                                                   "inversion"
+                                               ],
+                             "clip_l_truncation_risk":  null,
+                             "clip_l_token_estimate":  95,
+                             "version":  1,
+                             "positive_prompt":  "çº¯è²èæ¯ï¼ç®æ´å¹²åçèæ¯ï¼æ å¤æåºæ¯ï¼æ é£æ¯ï¼æ ç¯å¢ï¼æ å®¤å\u0085èæ¯ï¼æ å®¤å¤èæ¯ï¼æ çº¹çèæ¯ï¼æ å¾æ¡èæ¯ï¼éç»¿è²æ°´å¢¨è´¨æï¼éè²ç»æè¾¹ï¼æ­é\u0085å±±å½¢ä¸ç«¹å¶è£\u0085é¥°ï¼çå¼ï¼æå­å±\u0085ä¸­æå¸ï¼åè¡æ°´å¹³æåï¼å­è·ååï¼æ­£é¢å¹³è§è§è§ï¼åå¨çç½å\u0085\u0085è¶³ï¼æå­å\u0085å®¹ä¸º\"é å±± é\"ï¼ä¸å¤ä¸å°æ­£å¥½3ä¸ªå­ï¼ä¸ä¸¢å­ä¸ç¼ºå­ï¼ä¸éå­ä¸å¤å­ï¼æ¯ä¸ªå­ç¬ç»å®æ´ç»ææ­£ç¡®",
+                             "hanzi_count":  3,
+                             "negative_capability":  {
+                                                         "derived_from_positive":  false,
+                                                         "negative_node_id":  "5",
+                                                         "effective":  true,
+                                                         "cfg":  2.5,
+                                                         "reason":  "ok",
+                                                         "negative_chain_class":  "CLIPTextEncode",
+                                                         "blockers":  {
+
+                                                                      }
+                                                     },
+                             "positive_sha256":  "5dfcbb360e4881bf",
+                             "clip_l_used":  false,
+                             "negative_written_to":  "5",
+                             "symbols":  {
+
+                                         },
+                             "normalized_text":  "éå±±é",
+                             "layout_intent_detected":  false,
+                             "residue":  "",
+                             "applied":  true,
+                             "profile":  "zimage",
+                             "clip_l":  "çº¯è²èæ¯ï¼ç®æ´å¹²åçèæ¯ï¼æ å¤æåºæ¯ï¼æ é£æ¯ï¼æ ç¯å¢ï¼æ å®¤å\u0085èæ¯ï¼æ å®¤å¤èæ¯ï¼æ çº¹çèæ¯ï¼æ å¾æ¡èæ¯ï¼æå­å\u0085å®¹ä¸º\"é å±± é\"ï¼ä¸å¤ä¸å°æ­£å¥½3ä¸ªå­ï¼éç»¿è²æ°´å¢¨è´¨æï¼éè²ç»æè¾¹ï¼æ­é\u0085å±±å½¢ä¸ç«¹å¶è£\u0085é¥°",
+                             "negative_strategy":  "negative-conditioning",
+                             "inversion":  {
+                                               "covered":  {
+
+                                                           },
+                                               "unmapped_terms":  {
+
+                                                                  },
+                                               "matched":  {
+
+                                                           },
+                                               "injected_clauses":  {
+
+                                                                    }
+                                           },
+                             "text_profile":  "chinese"
+                         },
+    "prompt":  "éç»¿è²æ°´å¢¨è´¨æï¼éè²ç»æè¾¹ï¼æ­é\u0085å±±å½¢ä¸ç«¹å¶è£\u0085é¥°",
+    "canvas":  {
+                   "height":  1024,
+                   "width":  1024
+               },
+    "quality":  {
+                    "svg_fidelity":  93.0
+                },
+    "style":  "default",
+    "generated_at":  "2026-10-19T12:49:19.658369+00:00",
+    "artifact":  {
+                     "byte_length":  980474,
+                     "image_name":  "éç»¿è²æ°´å¢¨è´¨æ-éè²ç»æè¾¹-æ­é\u0085å±±å½¢ä¸ç«¹å¶è£\u0085é¥°.png"
+                 },
+    "attempted_workflows":  [
+                                "qwen_image_2512_gguf",
+                                "test_z_image_turbo"
+                            ],
+    "engine":  "comfyui",
+    "fallback_tier":  0,
+    "stats":  {
+                  "elapsed_ms":  4559
+              },
+    "format":  "PNG"
+}

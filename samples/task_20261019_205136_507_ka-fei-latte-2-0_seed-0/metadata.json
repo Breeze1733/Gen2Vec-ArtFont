@@ -1,0 +1,106 @@
+{
+    "generation":  {
+                       "duration_ms":  65137,
+                       "seed":  0,
+                       "prompt":  "棕色咖啡质感，奶泡纹理，英文字母清晰",
+                       "text":  "咖啡 Latte 2.0",
+                       "resolution":  "1024 x 1024"
+                   },
+    "comfyui_prompt_id":  "e7f5bb4d-2da1-48d8-96ea-67eec6c00ac6",
+    "workflow_used":  "test_z_image_turbo",
+    "resolution":  "1024x1024",
+    "preprocess":  {
+                       "png_transparency":  91.1
+                   },
+    "seed":  0,
+    "negative_prompt":  "",
+    "prompt_synthesis":  {
+                             "section_order":  [
+                                                   "background",
+                                                   "style",
+                                                   "layout",
+                                                   "content",
+                                                   "accuracy",
+                                                   "inversion"
+                                               ],
+                             "clip_l_truncation_risk":  null,
+                             "clip_l_token_estimate":  100,
+                             "version":  1,
+                             "positive_prompt":  "çº¯è²èæ¯ï¼ç®æ´å¹²åçèæ¯ï¼æ å¤æåºæ¯ï¼æ é£æ¯ï¼æ ç¯å¢ï¼æ å®¤å\u0085èæ¯ï¼æ å®¤å¤èæ¯ï¼æ çº¹çèæ¯ï¼æ å¾æ¡èæ¯ï¼æ£è²åå¡è´¨æï¼å¥¶æ³¡çº¹çï¼è±æå­æ¯æ¸\u0085æ°ï¼çå¼ï¼æå­å±\u0085ä¸­æå¸ï¼åè¡æ°´å¹³æåï¼å­è·ååï¼æ­£é¢å¹³è§è§è§ï¼åå¨çç½å\u0085\u0085è¶³ï¼æå­å\u0085å®¹ä¸º\"å å¡\"ï¼ä¸å¤ä¸å°æ­£å¥½2ä¸ªå­ï¼åæ¶å\u0085å«\"Latte 2.0\"ï¼ä¸ä¸¢å­ä¸ç¼ºå­ï¼ä¸éå­ä¸å¤å­ï¼æ¯ä¸ªå­ç¬ç»å®æ´ç»ææ­£ç¡®ï¼å­æ¯ä¸æ°å­å¤§å°æ¯ä¾æ­£ç¡®ãæ¸\u0085æ°å¯è¾¨ï¼ä¸éå¤ä¸éæ¼ï¼è¾¹ç¼éå©ãé«æ¸\u0085ãç¢éææ¸\u0085æ°çå­å½¢ï¼ç»é¢åªæå­å½¢æ¬èº«ï¼å¹²åå©è½",
+                             "hanzi_count":  2,
+                             "negative_capability":  {
+                                                         "derived_from_positive":  true,
+                                                         "negative_node_id":  null,
+                                                         "effective":  false,
+                                                         "cfg":  1.0,
+                                                         "reason":  "derived_from_positive",
+                                                         "negative_chain_class":  "ConditioningZeroOut",
+                                                         "blockers":  [
+                                                                          "derived_from_positive",
+                                                                          "cfg_too_low"
+                                                                      ]
+                                                     },
+                             "positive_sha256":  "9a65ea71c7018bac",
+                             "clip_l_used":  false,
+                             "negative_written_to":  null,
+                             "symbols":  ".",
+                             "normalized_text":  "åå¡ Latte 2.0",
+                             "layout_intent_detected":  false,
+                             "residue":  "Latte 2.0",
+                             "applied":  true,
+                             "profile":  "zimage",
+                             "clip_l":  "çº¯è²èæ¯ï¼ç®æ´å¹²åçèæ¯ï¼æ å¤æåºæ¯ï¼æ é£æ¯ï¼æ ç¯å¢ï¼æ å®¤å\u0085èæ¯ï¼æ å®¤å¤èæ¯ï¼æ çº¹çèæ¯ï¼æ å¾æ¡èæ¯ï¼æå­å\u0085å®¹ä¸º\"å å¡\"ï¼ä¸å¤ä¸å°æ­£å¥½2ä¸ªå­ï¼åæ¶å\u0085å«\"Latte 2.0\"ï¼æ£è²åå¡è´¨æï¼å¥¶æ³¡çº¹çï¼è±æå­æ¯æ¸\u0085æ°",
+                             "negative_strategy":  "positive-inversion",
+                             "inversion":  {
+                                               "covered":  [
+                                                               "complex_background",
+                                                               "scenery_background",
+                                                               "indoor_outdoor_scene",
+                                                               "gradient_pattern_bg",
+                                                               "broken_missing_strokes",
+                                                               "wrong_garbled_text",
+                                                               "duplicate_characters"
+                                                           ],
+                                               "unmapped_terms":  {
+
+                                                                  },
+                                               "matched":  [
+                                                               "complex_background",
+                                                               "scenery_background",
+                                                               "indoor_outdoor_scene",
+                                                               "gradient_pattern_bg",
+                                                               "broken_missing_strokes",
+                                                               "wrong_garbled_text",
+                                                               "duplicate_characters",
+                                                               "blurry_low_quality",
+                                                               "watermark"
+                                                           ],
+                                               "injected_clauses":  [
+                                                                        "è¾¹ç¼éå©ãé«æ¸\u0085ãç¢éææ¸\u0085æ°çå­å½¢",
+                                                                        "ç»é¢åªæå­å½¢æ¬èº«ï¼å¹²åå©è½"
+                                                                    ]
+                                           },
+                             "text_profile":  "mixed"
+                         },
+    "prompt":  "æ£è²åå¡è´¨æï¼å¥¶æ³¡çº¹çï¼è±æå­æ¯æ¸\u0085æ°",
+    "canvas":  {
+                   "height":  1024,
+                   "width":  1024
+               },
+    "quality":  {
+                    "svg_fidelity":  99.7
+                },
+    "style":  "default",
+    "generated_at":  "2026-10-19T12:51:36.507086+00:00",
+    "artifact":  {
+                     "byte_length":  224515,
+                     "image_name":  "æ£è²åå¡è´¨æ-å¥¶æ³¡çº¹ç-è±æå­æ¯æ¸\u0085æ°.png"
+                 },
+    "attempted_workflows":  "test_z_image_turbo",
+    "engine":  "comfyui",
+    "fallback_tier":  0,
+    "stats":  {
+                  "elapsed_ms":  2525
+              },
+    "format":  "PNG"
+}

@@ -40,6 +40,9 @@ __pycache__/
 outputs/
 logs/
 *.log
+
+# Delivered sample outputs (run.log is part of the standard task layout)
+!samples/**/run.log
 services/txt2img-api/input/
 services/txt2img-api/output/
 services/txt2img-api/temp/

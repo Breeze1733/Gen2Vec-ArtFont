@@ -1,0 +1,108 @@
+{
+    "generation":  {
+                       "duration_ms":  61590,
+                       "seed":  0,
+                       "prompt":  "frozen typography, cracked ice shards, translucent blue crystals, polar frost texture",
+                       "text":  "ICE CRUSH",
+                       "resolution":  "1024 x 1024"
+                   },
+    "comfyui_prompt_id":  "0e28899f-2cad-41c9-869d-8fc99077df94",
+    "workflow_used":  "flux_schnell",
+    "resolution":  "1024x1024",
+    "preprocess":  {
+                       "png_transparency":  77.5
+                   },
+    "seed":  0,
+    "negative_prompt":  "",
+    "prompt_synthesis":  {
+                             "section_order":  [
+                                                   "background",
+                                                   "style",
+                                                   "layout",
+                                                   "content",
+                                                   "accuracy",
+                                                   "inversion"
+                                               ],
+                             "clip_l_truncation_risk":  false,
+                             "clip_l_token_estimate":  38,
+                             "version":  1,
+                             "positive_prompt":  "plain solid background, simple clean backdrop, no complex scene, no landscape, no environment, no indoor background, no outdoor background, no textured surface, no patterned backdrop, isolated on solid color, frozen typography, cracked ice shards, translucent blue crystals, polar frost texture, layout: centered composition, single horizontal line of lettering on one baseline, even character spacing, front-facing flat view, generous margins, text \"ICE CRUSH\", crisp letterforms, perfect typography, no duplicate letters, sharp high-resolution edges, crisp vector-clean outlines, clean unmarked typography, only the lettering itself",
+                             "hanzi_count":  0,
+                             "negative_capability":  {
+                                                         "derived_from_positive":  false,
+                                                         "negative_node_id":  "9",
+                                                         "effective":  false,
+                                                         "cfg":  1.0,
+                                                         "reason":  "cfg_too_low",
+                                                         "negative_chain_class":  "CLIPTextEncodeFlux",
+                                                         "blockers":  "cfg_too_low"
+                                                     },
+                             "positive_sha256":  "b100d6d7a5efbc95",
+                             "clip_l_used":  true,
+                             "negative_written_to":  "9",
+                             "symbols":  {
+
+                                         },
+                             "normalized_text":  "ICE CRUSH",
+                             "layout_intent_detected":  false,
+                             "residue":  "ICE CRUSH",
+                             "applied":  true,
+                             "profile":  "flux",
+                             "clip_l":  "plain solid background, simple clean backdrop, no complex scene, no landscape, no environment, no indoor background, no outdoor background, no textured surface, no patterned backdrop, isolated on solid color",
+                             "negative_strategy":  "positive-inversion",
+                             "inversion":  {
+                                               "covered":  [
+                                                               "complex_background",
+                                                               "scenery_background",
+                                                               "indoor_outdoor_scene",
+                                                               "gradient_pattern_bg",
+                                                               "broken_missing_strokes",
+                                                               "wrong_garbled_text",
+                                                               "duplicate_characters"
+                                                           ],
+                                               "unmapped_terms":  {
+
+                                                                  },
+                                               "matched":  [
+                                                               "complex_background",
+                                                               "scenery_background",
+                                                               "indoor_outdoor_scene",
+                                                               "gradient_pattern_bg",
+                                                               "broken_missing_strokes",
+                                                               "wrong_garbled_text",
+                                                               "duplicate_characters",
+                                                               "blurry_low_quality",
+                                                               "watermark"
+                                                           ],
+                                               "injected_clauses":  [
+                                                                        "sharp high-resolution edges, crisp vector-clean outlines",
+                                                                        "clean unmarked typography, only the lettering itself"
+                                                                    ]
+                                           },
+                             "text_profile":  "english"
+                         },
+    "prompt":  "frozen typography, cracked ice shards, translucent blue crystals, polar frost texture",
+    "canvas":  {
+                   "height":  1024,
+                   "width":  1024
+               },
+    "quality":  {
+                    "svg_fidelity":  90.0
+                },
+    "style":  "default",
+    "generated_at":  "2026-10-19T12:50:26.273502+00:00",
+    "artifact":  {
+                     "byte_length":  1059138,
+                     "image_name":  "frozen-typography-cracked-ice-shards-translucent-blue-crystals-polar-frost-texture.png"
+                 },
+    "attempted_workflows":  [
+                                "flux_schnell",
+                                "test_z_image_turbo"
+                            ],
+    "engine":  "comfyui",
+    "fallback_tier":  0,
+    "stats":  {
+                  "elapsed_ms":  4075
+              },
+    "format":  "PNG"
+}
