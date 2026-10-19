@@ -961,7 +961,7 @@ function Invoke-SingleScenario {
     $result.Data = @{
       Kind            = 'single'
       TaskDir         = $outDir
-      Title           = "验收 · 单图（$($script:SingleText)）"
+      Title           = "验收·$($script:SingleText)"
       Text            = $script:SingleText
       Prompt          = $script:SingleStyle
       Negative        = ''
@@ -1315,7 +1315,7 @@ function Invoke-BatchScenario {
     $result.Data = @{
       Kind       = 'batch'
       TaskDir    = $root
-      Title      = "验收 · 批量（$($itemRecords.Count) 条）"
+      Title      = "验收·批量任务"
       BatchInput = ($batchInputLines -join "`n")
       Items      = @($itemRecords)
       Negative   = ''
@@ -1744,7 +1744,7 @@ function New-SingleHistoryEntry {
     mode        = 'single'
     title       = $Data.Title
     time        = (Get-Date).ToString('o')
-    status      = if ($ok) { 'completed' } else { 'failed' }
+    status      = if ($ok) { '完成' } else { '失败' }
     taskDir     = $Data.TaskDir
     outputRoot  = $Root
     paths       = [PSCustomObject]$Data.Paths
@@ -1778,8 +1778,8 @@ function New-BatchHistoryEntry {
   $succeeded = @($items | Where-Object { $_.status -eq 'success' }).Count
   $failed = @($items | Where-Object { $_.status -ne 'success' }).Count
   $status = if ($failed -gt 0) {
-    if ($succeeded -gt 0) { "partial ($succeeded/$($items.Count))" } else { 'failed' }
-  } else { 'completed' }
+    if ($succeeded -gt 0) { "部分完成（$succeeded/$($items.Count)）" } else { '失败' }
+  } else { '完成' }
 
   return [PSCustomObject]@{
     id          = Get-HistoryId "$($Data.TaskDir)|batch"
@@ -1850,9 +1850,9 @@ function Get-SummaryHistoryEntry {
   return [PSCustomObject]@{
     id          = Get-HistoryId "$SummaryPath|$time"
     mode        = "batch"
-    title       = "Acceptance batch ($($Rows.Count) items)"
+    title       = "验收·批量任务"
     time        = $time
-    status      = if ($failedRows.Count -gt 0) { if ($succeeded -gt 0) { "partial ($succeeded/$($Rows.Count))" } else { "failed" } } else { "completed" }
+    status      = if ($failedRows.Count -gt 0) { if ($succeeded -gt 0) { "部分完成（$succeeded/$($Rows.Count)）" } else { "失败" } } else { "完成" }
     taskDir     = $taskDir
     outputRoot  = $OutputRoot
     paths       = [PSCustomObject]@{ summary = $SummaryPath; summaryDir = $taskDir }
@@ -1933,8 +1933,8 @@ function Sync-AcceptanceHistoryIndex {
   $entry | Add-Member -NotePropertyName itemsCount -NotePropertyValue $rows.Count -Force
   $entry | Add-Member -NotePropertyName succeeded -NotePropertyValue $succeeded -Force
   $entry | Add-Member -NotePropertyName failed -NotePropertyValue $failedRows.Count -Force
-  $entry | Add-Member -NotePropertyName title -NotePropertyValue "Acceptance batch ($($rows.Count) items)" -Force
-  $entry | Add-Member -NotePropertyName status -NotePropertyValue $(if ($failedRows.Count -gt 0) { if ($succeeded -gt 0) { "partial ($succeeded/$($rows.Count))" } else { "failed" } } else { "completed" }) -Force
+  $entry | Add-Member -NotePropertyName title -NotePropertyValue "验收·批量任务" -Force
+  $entry | Add-Member -NotePropertyName status -NotePropertyValue $(if ($failedRows.Count -gt 0) { if ($succeeded -gt 0) { "部分完成（$succeeded/$($rows.Count)）" } else { "失败" } } else { "完成" }) -Force
   if (-not $entry.paths) {
     $entry | Add-Member -NotePropertyName paths -NotePropertyValue ([PSCustomObject]@{}) -Force
   }
