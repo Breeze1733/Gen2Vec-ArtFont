@@ -113,9 +113,12 @@ function parseJsonInput(content) {
  *   2. 分隔符是什么（按行内是否出现 `|`、制表符、逗号依次判定）。
  * 有表头时按表头名映射字段，否则按「文本 | 提示词 | 负面 | seed | 分辨率」的位置约定。
  */
-function parseTextInput(content) {
-  // 按行切分并丢弃空行（用户常在末尾留空行）
-  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+export function parseTextInput(content) {
+  // 按行切分，丢弃空行和注释行（合并夹具用 #route 标记路由用例）
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^﻿/, '').trim())
+    .filter((line) => line && !line.startsWith('#'))
   if (lines.length === 0) return []
 
   const first = lines[0].toLowerCase()

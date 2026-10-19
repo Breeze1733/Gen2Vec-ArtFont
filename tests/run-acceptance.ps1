@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  End-to-end acceptance test: single-image vectorization + batch generation, plus an optional 300-row suite.
+  End-to-end acceptance test: single-image vectorization + batch generation, plus an optional 120-row suite.
 
 .DESCRIPTION
   By default it runs two scenarios (one click on the button starts everything; no input required):
@@ -8,7 +8,7 @@
     1. Single-image vectorization: the fixed Chinese input runs the full chain (prompt synthesis -> txt2img -> vectorize)
     2. Batch generation: 3 inputs hitting the Qwen, Flux and Z-Image route chains
 
-  Pass -Full to append the 300-row CLI batch suite (runs gen2vec_cli.exe batch
+  Pass -Full to append the 120-row CLI batch suite (runs gen2vec_cli.exe batch
   and verifies batch_summary.csv plus every task's artifacts).
 
   Generation scenarios are guarded by a ComfyUI check: if ComfyUI is not ready the
@@ -20,7 +20,7 @@
   Run only the single-image scenario, skipping batch generation (saves ~5-15 minutes).
 
 .PARAMETER Full
-  Append the full 300-row batch suite (sequential; takes hours).
+  Append the full 120-row batch suite (sequential; takes hours).
 
 .PARAMETER DryRun
   Run the preflight checks and print the plan without calling any backend.
@@ -56,7 +56,7 @@ param(
   [int]$VectorTimeoutSec = 600,
   [int]$ComfyUiWaitSec = 300,
 
-  # -- 300-row suite options (same semantics as the previous script) --
+  # -- 120-row suite options (same semantics as the previous script) --
   [string]$CliPath = "",
   [string]$Resolution = "1664 x 928",
   [ValidateSet("clean", "balanced", "detailed", "ultra")]
@@ -195,7 +195,7 @@ function ConvertFrom-AcceptanceLine {
     Parse one line: `text | style prompt | negative prompt | seed | resolution [| more columns]`.
 
     Blank lines and `#` comments return $null. Handles full-width pipes, tabs and BOM.
-    Fields from column 6 on go into Extras (routes.txt uses them for expected workflow/profile).
+    Fields from column 6 on go into Extras (the `#route` rows use them for expected workflow/profile).
   #>
   param([string]$Line)
 
@@ -260,18 +260,42 @@ function Resolve-FixturePath {
 
 function Read-RoutesFixture {
   <#
-    Read routes.txt: 5 input columns + expected workflow + expected text profile.
+    Read route rows from the merged acceptance fixture. Route rows are written as
+    comment-prefixed data so the -Full suite and the CLI ignore them:
+
+        #route text | prompt | negative | seed | resolution | expected workflow | expected text profile
+
     seed defaults to '0' and resolution to '1024 x 1024'.
   #>
   param([Parameter(Mandatory = $true)][string]$Path)
 
-  if (-not (Test-Path -LiteralPath $Path)) { throw "routes fixture 不存在：$Path" }
+  if (-not (Test-Path -LiteralPath $Path)) { throw "acceptance fixture 不存在：$Path" }
 
   $rows = @()
+  $lineNo = 0
   foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
-    $row = ConvertFrom-AcceptanceLine -Line $line
-    if ($null -eq $row) { continue }
-    if ([string]::IsNullOrWhiteSpace($row.Text)) { continue }
+    $lineNo++
+    # .NET Trim() does not remove U+FEFF, so strip it explicitly before the marker check.
+    $text = ([string]$line).Replace([string][char]0xFEFF, '').Trim()
+
+    # -match is case-insensitive. Whitespace is required after the marker, so
+    # "#routes ..." and "#route: ..." remain ordinary comments.
+    if ($text -notmatch '^#route(?:\s+(.+))?$') { continue }
+
+    $payload = $Matches[1]
+    if ([string]::IsNullOrWhiteSpace($payload)) {
+      throw "$Path 第 $lineNo 行：#route 标记后缺少数据"
+    }
+
+    $row = ConvertFrom-AcceptanceLine -Line $payload
+    if ($null -eq $row -or [string]::IsNullOrWhiteSpace($row.Text)) {
+      throw "$Path 第 $lineNo 行：#route 数据缺少文本"
+    }
+    if ($row.Extras.Count -lt 2 -or
+        [string]::IsNullOrWhiteSpace($row.Extras[0]) -or
+        [string]::IsNullOrWhiteSpace($row.Extras[1])) {
+      throw "$Path 第 $lineNo 行：#route 需要「期望工作流」和「期望文本分类」两列"
+    }
 
     $rows += [PSCustomObject]@{
       Text             = $row.Text
@@ -279,8 +303,8 @@ function Read-RoutesFixture {
       Negative         = $row.Negative
       Seed             = if ([string]::IsNullOrWhiteSpace($row.Seed)) { '0' } else { $row.Seed }
       Resolution       = if ([string]::IsNullOrWhiteSpace($row.Resolution)) { '1024 x 1024' } else { $row.Resolution }
-      ExpectedWorkflow = if ($row.Extras.Count -ge 1) { $row.Extras[0] } else { '' }
-      ExpectedProfile  = if ($row.Extras.Count -ge 2) { $row.Extras[1] } else { '' }
+      ExpectedWorkflow = $row.Extras[0]
+      ExpectedProfile  = $row.Extras[1]
     }
   }
 
@@ -1129,7 +1153,7 @@ function Invoke-BatchScenario {
 
   $result = New-ScenarioResult -Name '批量生成（3 条，覆盖三条路由链）'
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
-  $fixture = Resolve-FixturePath -Name 'routes.txt'
+  $fixture = Resolve-FixturePath -Name 'acceptance.txt'
   $root = Join-Path $Ctx.ReportDir 'scenarios\02_batch'
 
   $rows = @(Read-RoutesFixture -Path $fixture)
@@ -1305,7 +1329,7 @@ function Invoke-BatchScenario {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# Full 300-row suite (appended by -Full; verification machinery from the previous script)
+# Full 120-row suite (appended by -Full; verification machinery from the previous script)
 # ══════════════════════════════════════════════════════════════════════
 
 function Resolve-AbsolutePath {
@@ -1514,7 +1538,7 @@ function Add-Failure {
 }
 
 function Test-AcceptanceArtifacts {
-  <# Verify batch_summary.csv and every task's artifacts for the 300-row suite. #>
+  <# Verify batch_summary.csv and every task's artifacts for the 120-row suite. #>
   param(
     [string]$SummaryPath,
     [array]$ExpectedRows,
@@ -1934,7 +1958,7 @@ function Sync-AcceptanceHistoryIndex {
 }
 
 # ══════════════════════════════════════════════════════════════════════
-# 300-row suite orchestration
+# 120-row suite orchestration
 # ══════════════════════════════════════════════════════════════════════
 
 function Get-AcceptanceSuiteConfig {
@@ -1945,7 +1969,7 @@ function Get-AcceptanceSuiteConfig {
   return @{
     Label          = "acceptance"
     Fixture        = $fixture
-    ExpectedRows   = 0
+    ExpectedRows   = 120
     MinRows        = 100
     Seed           = 2026061201
     TimeoutMinutes = 270
@@ -1954,10 +1978,10 @@ function Get-AcceptanceSuiteConfig {
 }
 
 function Invoke-FullSuite {
-  <# Run the 300-row CLI batch suite and verify artifacts; returns a scenario result object. #>
+  <# Run the 120-row CLI batch suite and verify artifacts; returns a scenario result object. #>
   param($Ctx, [string]$OutputRoot_)
 
-  $result = New-ScenarioResult -Name "300 条完整套件（$($Ctx.SuiteFixture)）"
+  $result = New-ScenarioResult -Name "120 条完整套件（$($Ctx.SuiteFixture)）"
   $watch = [System.Diagnostics.Stopwatch]::StartNew()
   $config = $Ctx.SuiteConfig
 
@@ -1968,7 +1992,7 @@ function Invoke-FullSuite {
   try {
     $expectedRows = @(New-PreparedFixture -FixturePath $config.Fixture -PreparedPath $preparedFixture -Config $config)
   } catch {
-    Add-Check $result $false '准备 300 条输入' $_.Exception.Message -DisplayText '无法准备测试输入'
+    Add-Check $result $false '准备 120 条输入' $_.Exception.Message -DisplayText '无法准备测试输入'
     $result.Elapsed = $watch.Elapsed.TotalSeconds
     return $result
   }

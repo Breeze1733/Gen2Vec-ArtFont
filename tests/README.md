@@ -6,7 +6,16 @@
 
 | 套件 | 文件 | 条数 | 用途 |
 | --- | --- | ---: | --- |
-| acceptance | `tests/fixtures/acceptance.txt` | 300 | 标准批量验收，满足赛题”≥100 条”要求 |
+| acceptance | `tests/fixtures/acceptance.txt` | 120 | 标准批量验收，满足赛题「≥100 条」要求 |
+
+`acceptance.txt` 是单一夹具：文件顶部是 3 条以 `#route` 加空格开头的路由用例供默认模式的场景 2，后面是 120 条正文。
+
+```text
+#route 文本 | 风格提示词 | 负面提示词 | seed | resolution | 期望工作流 | 期望文本分类
+...
+文本 | 风格提示词
+...
+```
 
 安装包中的 `tests\` 目录会进一步精简，只包含：
 
@@ -54,8 +63,11 @@ tests\run-acceptance.bat
 常用调试参数：
 
 ```powershell
-# 只生成规范化输入并打印 CLI 命令，不实际调用后端
+# 只打印场景计划，不解析夹具、不调用后端
 .\tests\run-acceptance.ps1 -DryRun
+
+# 打印包含完整套件的场景计划，不解析夹具、不调用后端
+.\tests\run-acceptance.ps1 -Full -DryRun
 
 # 核验已经跑完的一份 batch_summary.csv
 .\tests\run-acceptance.ps1 -VerifyOnly outputs\task_...\batch_summary.csv
@@ -63,37 +75,3 @@ tests\run-acceptance.bat
 # 不做矢量化，只验 original.png、metadata、日志和汇总表
 .\tests\run-acceptance.ps1 -NoVectorize
 ```
-
----
-
-## 四场景验收脚本（run-scenarios）
-
-`run-acceptance.ps1` 只覆盖批量生成。`run-scenarios` 覆盖四个场景，与前者并存：
-
-| # | 场景 | 内容 |
-| --- | --- | --- |
-| 1 | 单图矢量化 | 输入「念奴娇」，走完整链路：提示词 → 文生图 → 矢量化 |
-| 2 | 批量生成 | 3 条输入，分别命中 Qwen / Flux / Z-Image 三条路由链 |
-| 3 | 异常输入 | 超长文本、非法自定义分辨率、损坏或改后缀的图片、源文件被移走 |
-| 4 | SVG 打开校验 | 把产出的 SVG 真正渲染成 PNG，校验图形非空，而不只是 XML 能解析 |
-
-### 运行
-
-双击 `tests\run-scenarios.bat`。
-
-**不需要预先打开桌面端或 CLI** —— 后端没在运行的话脚本会自己拉起（连同 ComfyUI）；已在运行的则直接复用，退出时不动它。预计 7-20 分钟，全程打印进度与已等待时间。
-
-### 结果
-
-报告写入 `outputs/acceptance_<时间戳>/`，含 `report.txt`、`report.json`、各场景产物与运行日志。
-
-| 退出码 | 含义 |
-| ---: | --- |
-| 0 | 四个场景全部通过 |
-| 1 | 有场景失败 |
-| 2 | 环境不可用（后端连不上也拉不起） |
-| 3 | 参数错误 |
-
-### 说明
-
-ComfyUI 不可用时，后端会静默回落到占位图。脚本对生成类场景设有 ComfyUI 门禁，并逐条核对响应不是占位图产物，避免出现「全部通过但什么都没生成」。

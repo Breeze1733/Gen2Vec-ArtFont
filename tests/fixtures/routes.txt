@@ -1,9 +1,0 @@
-# Three batch inputs, each hitting one route chain (delimiter ` | `, same as acceptance.txt)
-# Columns: text | style prompt | negative prompt | seed | resolution | expected workflow | expected text profile
-#
-# Classification rule: only Han characters and Latin letters count; digits, punctuation,
-# symbols and whitespace are ignored.
-#   The expected text profile is only chinese / english / mixed, not the workflow name.
-青山集 | 青绿色水墨质感，金色细描边，搭配山形与竹叶装饰 |  | 0 | 1024 x 1024 | qwen_image_2512_gguf | chinese
-ICE CRUSH | frozen typography, cracked ice shards, translucent blue crystals, polar frost texture |  | 0 | 1024 x 1024 | flux_schnell | english
-咖啡 Latte 2.0 | 棕色咖啡质感，奶泡纹理，英文字母清晰 |  | 0 | 1024 x 1024 | test_z_image_turbo | mixed

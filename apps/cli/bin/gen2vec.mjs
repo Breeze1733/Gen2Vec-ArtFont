@@ -87,7 +87,7 @@ ${CLI_NAME} v${VERSION} — 矢量艺术字生成器 · 自动化验收控制台
   评审验收 — 单条测试:
     ${CLI_NAME} pipeline --text "七里香" --prompt "清新国风、墨绿色金边"
 
-  评审验收 — 批量 300 条:
+  评审验收 — 批量 120 条:
     ${CLI_NAME} batch --input-file tests/acceptance.txt --output-dir ./outputs/cli-batch
 
   图片矢量化:

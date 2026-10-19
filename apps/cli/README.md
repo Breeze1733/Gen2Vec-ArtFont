@@ -116,6 +116,8 @@ gen2vec_cli.exe vectorize -i input.png --preset ultra --preview
 文本 | 风格提示词 | 负面提示词 | seed | resolution
 ```
 
+以 `#` 开头的行视为注释，会被跳过。
+
 常用：
 
 ```powershell

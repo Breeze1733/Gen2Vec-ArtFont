@@ -33,8 +33,7 @@
       { "from": "../../apps/cli/dist/gen2vec_cli.exe", "to": "../gen2vec_cli.exe" },
       { "from": "../../tests/run-acceptance.ps1", "to": "../tests/run-acceptance.ps1" },
       { "from": "../../tests/run-acceptance.bat", "to": "../tests/run-acceptance.bat" },
-      { "from": "../../tests/fixtures/acceptance.txt", "to": "../tests/acceptance.txt" },
-      { "from": "../../tests/fixtures/routes.txt", "to": "../tests/routes.txt" }
+      { "from": "../../tests/fixtures/acceptance.txt", "to": "../tests/acceptance.txt" }
     ],
     "win": {
       "target": "nsis",
