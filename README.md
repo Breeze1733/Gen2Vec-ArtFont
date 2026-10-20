@@ -146,14 +146,27 @@ node apps/cli/bin/gen2vec.mjs pipeline --text "七里香" --prompt "清新国风
 
 ```powershell
 # 后端 EXE
-cd services/txt2img-api  && .\scripts\build-backend-exe.ps1
-cd services/vectorizer-api && .\scripts\build-backend-exe.ps1
+Push-Location .\services\txt2img-api
+try {
+    .\scripts\build-backend-exe.ps1
+} finally {
+    Pop-Location
+}
+
+Push-Location .\services\vectorizer-api
+try {
+    .\scripts\build-backend-exe.ps1
+} finally {
+    Pop-Location
+}
 
 # CLI EXE（Node.js SEA，需 Node 20+）
-cd apps/cli && npm install && npm run build
+npm --prefix .\apps\cli install
+npm --prefix .\apps\cli run build
 
 # Electron 安装包
-cd apps/desktop && npm install && npm run electron:build
+npm --prefix .\apps\desktop install
+npm --prefix .\apps\desktop run electron:build
 ```
 
 产物位于 `release/`，安装包会自动嵌入两个后端 EXE、CLI 和测试脚本。
