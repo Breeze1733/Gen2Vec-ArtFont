@@ -4,24 +4,23 @@
 
 ## 测试集
 
-| 套件 | 文件 | 条数 | 用途 |
+测试集提供 TXT、CSV、JSON 三种等价格式，均可直接被 CLI `gen2vec_cli.exe batch` 与桌面端「批量提示词」模式读取：
+
+| 格式 | 文件 | 条数 | 说明 |
 | --- | --- | ---: | --- |
-| acceptance | `tests/fixtures/acceptance.txt` | 120 | 标准批量验收，满足赛题「≥100 条」要求 |
+| TXT | `tests/fixtures/acceptance.txt` | 120 | 管道符分隔文本（单一夹具，含 3 条 `#route` 路由用例与 120 条正文） |
+| CSV | `tests/fixtures/acceptance.csv` | 120 | 标准逗号分隔 CSV，首行为标准表头 `text,prompt,negative,seed,resolution` |
+| JSON | `tests/fixtures/acceptance.json` | 120 | 标准 JSON 对象数组，每项包含 `text` 与 `prompt` 字段 |
 
-`acceptance.txt` 是单一夹具：文件顶部是 3 条以 `#route` 加空格开头的路由用例供默认模式的场景 2，后面是 120 条正文。
+`acceptance.txt` 专供验收脚本 `run-acceptance.ps1` 使用：文件顶部通过 `#route` 标注了 3 条供场景 2 使用的路由期望用例，正文提供 120 条用例。`acceptance.csv` 与 `acceptance.json` 为纯净的标准数据格式，可直接供 CLI `batch` 命令及桌面端批量导入使用。
 
-```text
-#route 文本 | 风格提示词 | 负面提示词 | seed | resolution | 期望工作流 | 期望文本分类
-...
-文本 | 风格提示词
-...
-```
-
-安装包中的 `tests\` 目录会进一步精简，只包含：
+安装包中的 `tests\` 目录包含：
 
 ```text
 tests/
 ├─ acceptance.txt
+├─ acceptance.csv
+├─ acceptance.json
 ├─ run-acceptance.ps1
 └─ run-acceptance.bat
 ```
